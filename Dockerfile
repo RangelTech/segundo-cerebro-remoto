@@ -1,9 +1,9 @@
-FROM node:22-alpine
+FROM node:24-alpine
 WORKDIR /app
 ENV NODE_ENV=production PORT=8080 DATA_DIR=/data
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
-COPY server.js ./
+COPY server.js db.js ./
 COPY public ./public
 RUN mkdir -p /data && chown node:node /data
 USER node

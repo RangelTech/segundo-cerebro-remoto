@@ -1,9 +1,14 @@
 process.env.DATA_DIR = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'ponte-'))
 process.env.CODIGO_MS = '1500'
+process.env.LIMITE_MULT = '1000'
+process.env.MAX_ARQUIVO_MB = '1'
+process.env.MAX_PENDENTES = '3'
 const test = require('node:test')
 const assert = require('node:assert')
 const WebSocket = require('ws')
-const { servidor } = require('../server')
+const { servidor, db, limpar } = require('../server')
+const fs = require('fs')
+const path = require('path')
 
 let base
 test.before(async () => {
@@ -107,4 +112,101 @@ test('computador offline: celular é avisado', async () => {
   const e = await new Promise((res) => wcel.on('message', (d) => { const m = JSON.parse(String(d)); if (m.t === 'estado') res(m) }))
   assert.equal(e.online, false)
   wcel.close()
+})
+
+// ---------- arquivos, auditoria e banco ----------
+const enviarArquivo = (cookie, nome, corpo, tipo = 'text/plain') => fetch(`${base}/api/celular/arquivo?nome=${encodeURIComponent(nome)}`, { method: 'POST', headers: { Cookie: cookie, 'Content-Type': tipo }, body: corpo })
+
+test('arquivo do celular: sobe, o computador baixa uma vez e a ponte apaga', async () => {
+  const pc = await registrar()
+  const v = await vincular(pc)
+  const r = await enviarArquivo(v.cookie, '../../etc/passwd', 'conteudo do anexo')
+  assert.equal(r.status, 200)
+  const a = await r.json()
+  assert.ok(!a.nome.includes('/') && !a.nome.startsWith('.'), 'nome saneado: ' + a.nome)
+  const dl = await fetch(`${base}/api/arquivos/${a.id}`, { headers: { Authorization: 'Bearer ' + pc.auth } })
+  assert.equal(dl.status, 200)
+  assert.equal(await dl.text(), 'conteudo do anexo')
+  await new Promise((r) => setTimeout(r, 100))
+  assert.equal((await fetch(`${base}/api/arquivos/${a.id}`, { headers: { Authorization: 'Bearer ' + pc.auth } })).status, 404)
+  assert.equal(db.arquivo(a.id), undefined)
+})
+
+test('arquivo: outro computador não baixa, sem cookie não envia, acima do limite é recusado', async () => {
+  const a = await registrar()
+  const b = await registrar()
+  const va = await vincular(a)
+  assert.equal((await enviarArquivo('', 'x.txt', 'oi')).status, 401)
+  const ok = await (await enviarArquivo(va.cookie, 'x.txt', 'oi')).json()
+  assert.equal((await fetch(`${base}/api/arquivos/${ok.id}`, { headers: { Authorization: 'Bearer ' + b.auth } })).status, 404)
+  const grande = await enviarArquivo(va.cookie, 'grande.bin', Buffer.alloc(1024 * 1024 + 10), 'application/octet-stream')
+  assert.equal(grande.status, 413)
+})
+
+test('limite de arquivos pendentes por computador', async () => {
+  const pc = await registrar()
+  const v = await vincular(pc)
+  for (let i = 0; i < 3; i++) assert.equal((await enviarArquivo(v.cookie, `a${i}.txt`, 'x')).status, 200)
+  assert.equal((await enviarArquivo(v.cookie, 'a4.txt', 'x')).status, 429)
+})
+
+test('enviar com arquivos: a ponte só repassa o que o celular realmente enviou, com nome do registro', async () => {
+  const pc = await registrar()
+  const v = await vincular(pc)
+  const outro = await vincular(pc)
+  const meu = await (await enviarArquivo(v.cookie, 'meu.txt', 'a')).json()
+  const alheio = await (await enviarArquivo(outro.cookie, 'alheio.txt', 'b')).json()
+  const wpc = await abrir(base.replace('http', 'ws') + '/ws/computador', { Authorization: 'Bearer ' + pc.auth })
+  const wcel = await abrir(base.replace('http', 'ws') + '/ws/celular', { Cookie: v.cookie })
+  const chegou = proxima(wpc, (m) => m.t === 'enviar')
+  wcel.send(JSON.stringify({ t: 'enviar', id: 'c1', texto: 'veja', arquivos: [{ id: meu.id, nome: 'FORJADO.exe' }, { id: alheio.id }, { id: 'inexistente' }] }))
+  const m = await chegou
+  assert.equal(m.arquivos.length, 1)
+  assert.equal(m.arquivos[0].id, meu.id)
+  assert.equal(m.arquivos[0].nome, 'meu.txt')
+  wpc.close()
+  wcel.close()
+})
+
+test('comando desconhecido do celular não é repassado', async () => {
+  const pc = await registrar()
+  const v = await vincular(pc)
+  const wpc = await abrir(base.replace('http', 'ws') + '/ws/computador', { Authorization: 'Bearer ' + pc.auth })
+  const wcel = await abrir(base.replace('http', 'ws') + '/ws/celular', { Cookie: v.cookie })
+  const recebidos = []
+  wpc.on('message', (d) => recebidos.push(JSON.parse(String(d))))
+  wcel.send(JSON.stringify({ t: 'rm-rf' }))
+  wcel.send(JSON.stringify({ t: 'chats' }))
+  await new Promise((r) => setTimeout(r, 200))
+  assert.ok(recebidos.some((m) => m.t === 'chats'))
+  assert.ok(!recebidos.some((m) => m.t === 'rm-rf'))
+  wpc.close()
+  wcel.close()
+})
+
+test('auditoria registra vínculo, envio e revogação', async () => {
+  const pc = await registrar()
+  const v = await vincular(pc)
+  await enviarArquivo(v.cookie, 'audit.txt', 'x')
+  const lista = (await (await fetch(`${base}/api/celulares`, { headers: { Authorization: 'Bearer ' + pc.auth } })).json()).lista
+  await post('/api/celulares/' + lista[0].id, pc.auth, 'DELETE')
+  const ev = (await (await fetch(`${base}/api/eventos`, { headers: { Authorization: 'Bearer ' + pc.auth } })).json()).lista.map((e) => e.tipo)
+  for (const t of ['celular-vinculado', 'arquivo-enviado', 'celular-revogado']) assert.ok(ev.includes(t), t)
+})
+
+test('limpeza apaga arquivos vencidos do disco e do banco', async () => {
+  const pc = await registrar()
+  const v = await vincular(pc)
+  const a = await (await enviarArquivo(v.cookie, 'velho.txt', 'x')).json()
+  db.raw.prepare('UPDATE arquivos SET criado = ? WHERE id = ?').run(Date.now() - 48 * 3600 * 1000, a.id)
+  limpar()
+  await new Promise((r) => setTimeout(r, 100))
+  assert.equal(db.arquivo(a.id), undefined)
+  assert.equal(fs.existsSync(path.join(process.env.DATA_DIR, 'arquivos', a.id)), false)
+})
+
+test('código de vínculo sobrevive a reinício (fica no banco)', async () => {
+  const pc = await registrar()
+  const v = await (await post('/api/vinculo', pc.auth)).json()
+  assert.ok(db.raw.prepare('SELECT 1 AS x FROM codigos WHERE codigo = ?').get(v.codigo))
 })

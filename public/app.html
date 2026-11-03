@@ -22,11 +22,14 @@
   <header class="cab"><button id="voltar" class="icone" aria-label="Voltar">‹</button><div id="titulo" class="titulo">Conversa</div></header>
   <div id="msgs" class="msgs"></div>
   <div id="perms" class="perms"></div>
-  <form id="form" class="compor"><textarea id="texto" rows="1" placeholder="Escreva para o seu computador…" enterkeyhint="send"></textarea><button id="enviar" type="submit" aria-label="Enviar">↑</button></form>
+  <div id="pendentes" class="pendentes" hidden></div>
+  <form id="form" class="compor"><button type="button" id="anexar" class="ic" aria-label="Anexar arquivo">📎</button><textarea id="texto" rows="1" placeholder="Escreva para o seu computador…" enterkeyhint="send"></textarea><button type="button" id="mic" class="ic" aria-label="Gravar áudio">🎙</button><button id="enviar" type="submit" aria-label="Enviar">↑</button></form>
+  <input type="file" id="arquivo" multiple hidden>
 </main>
 <main id="vazio" class="tela centro" hidden>
   <div><img src="/icone-192.png" class="grande" alt=""><h2>Celular não vinculado</h2><p>No Segundo Cérebro do computador, abra <b>Configurações › Celular</b> e leia o QR code com a câmera.</p></div>
 </main>
+<div id="toast" class="toast" hidden></div>
 <script src="/app.js"></script>
 </body>
 </html>
