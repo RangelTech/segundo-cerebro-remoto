@@ -1,0 +1,46 @@
+name: Release
+# Publica a imagem + release-manifest. NAO faz deploy (so o vps_rt_infra implanta).
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versao (ex.: v0.1.0)"
+        required: true
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Build da imagem
+        run: |
+          V="${{ inputs.version }}"
+          docker build -t "segundo-cerebro-remoto:${V}" .
+          docker save "segundo-cerebro-remoto:${V}" | gzip -9 > image.tar.gz
+          echo "IMAGE_ID=sha256:$(gunzip -c image.tar.gz | tar -xO manifest.json | python3 -c "import sys,json,re;print(re.sub(r'^.*/','',json.load(sys.stdin)[0]['Config']).replace('.json',''))")" >> "$GITHUB_ENV"
+          echo "ARCHIVE_SHA=$(sha256sum image.tar.gz | cut -d' ' -f1)" >> "$GITHUB_ENV"
+      - name: Manifesto
+        run: |
+          python3 - <<'PY'
+          import json, os, datetime
+          v = "${{ inputs.version }}"
+          m = {"schema": 1, "service": "segundo-cerebro-remoto", "repo": "RangelTech/segundo-cerebro-remoto", "commit": os.environ["GITHUB_SHA"][:7], "version": v,
+               "artifact": {"type": "docker-archive", "asset": "image.tar.gz", "sha256": os.environ["ARCHIVE_SHA"], "image_id": os.environ["IMAGE_ID"], "tag": "segundo-cerebro-remoto:" + v},
+               "built_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+               "healthcheck": {"path": "/health", "expect": 200, "timeout_s": 60, "port": 8080},
+               "env": {"required": []}, "resources": {"memory": "128m", "cpus": "0.25"}}
+          json.dump(m, open("release-manifest.json", "w"), indent=2)
+          PY
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="${{ inputs.version }}"
+          gh release create "$V" release-manifest.json image.tar.gz --title "$V" --notes "Artefato docker-archive. Deploy: somente vps_rt_infra." --target "${GITHUB_SHA}" || gh release upload "$V" release-manifest.json image.tar.gz --clobber

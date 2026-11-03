@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+<meta name="theme-color" content="#1f1d1a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icone-192.png">
+<link rel="icon" href="/icone-192.png">
+<title>Segundo Cérebro</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="faixa" class="faixa" hidden></div>
+<main id="lista-tela" class="tela">
+  <header class="cab"><div class="marca"><img src="/icone-192.png" alt=""><span>Segundo Cérebro</span></div><button id="novo" class="novo" aria-label="Nova conversa">＋ Nova</button></header>
+  <div id="lista" class="lista"></div>
+</main>
+<main id="chat-tela" class="tela" hidden>
+  <header class="cab"><button id="voltar" class="icone" aria-label="Voltar">‹</button><div id="titulo" class="titulo">Conversa</div></header>
+  <div id="msgs" class="msgs"></div>
+  <div id="perms" class="perms"></div>
+  <form id="form" class="compor"><textarea id="texto" rows="1" placeholder="Escreva para o seu computador…" enterkeyhint="send"></textarea><button id="enviar" type="submit" aria-label="Enviar">↑</button></form>
+</main>
+<main id="vazio" class="tela centro" hidden>
+  <div><img src="/icone-192.png" class="grande" alt=""><h2>Celular não vinculado</h2><p>No Segundo Cérebro do computador, abra <b>Configurações › Celular</b> e leia o QR code com a câmera.</p></div>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>
