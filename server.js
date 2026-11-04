@@ -1,61 +1,29 @@
-// Ponte do controle remoto do Segundo Cérebro (spec 20).
-// O computador e o celular abrem WebSocket até aqui; a ponte repassa mensagens, guarda os vínculos (hashes) em SQLite
-// e carrega arquivos do celular até o computador (guardados só em trânsito e apagados depois).
+// Ponte do acesso web remoto do Segundo Cérebro (spec 21 §12).
+// O app (computador ou VM) abre um WebSocket de SAÍDA até aqui, identificado pela chave da conta. O navegador (celular ou
+// computador) entra com e-mail e senha da mesma conta, escolhe a máquina e carrega a própria interface do app, que a ponte
+// busca no app pelo túnel (assim a tela web é sempre da mesma versão do app instalado). A ponte não guarda nada em disco:
+// sessões são cookies assinados e as máquinas conectadas ficam só em memória.
 const http = require('http')
+const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
-const crypto = require('crypto')
 const { WebSocketServer } = require('ws')
-const banco = require('./db')
 
 const PORTA = +process.env.PORT || 8080
-const DADOS = process.env.DATA_DIR || path.join(__dirname, 'data')
-const PUBLICO = path.join(__dirname, 'public')
-const VALIDADE_CODIGO_MS = +process.env.CODIGO_MS || 2 * 60 * 1000
-const MAX_ARQUIVO = (+process.env.MAX_ARQUIVO_MB || 25) * 1024 * 1024
-const MAX_PENDENTES = +process.env.MAX_PENDENTES || 30
-const MAX_BYTES_PENDENTES = (+process.env.MAX_PENDENTES_MB || 300) * 1024 * 1024
-const ARQUIVO_TTL_MS = +process.env.ARQUIVO_TTL_MS || 24 * 3600 * 1000
-const EVENTO_TTL_MS = 90 * 24 * 3600 * 1000
-const MAX_MSG = 256 * 1024
+const ACCESS = (process.env.ACCESS_URL || 'https://qwen.rangeltech.net').replace(/\/+$/, '')
+const SEGREDO = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex') // sem a variável, as sessões caem a cada reinício
+const SESSAO_MS = (+process.env.SESSAO_DIAS || 7) * 24 * 3600 * 1000
+const MAX_MSG = (+process.env.MAX_MSG_MB || 40) * 1024 * 1024
 const LIM = +process.env.LIMITE_MULT || 1 // multiplicador dos limites por IP (testes usam valores altos)
-const COOKIE = 'sb_cel'
-const DEZ_ANOS = 10 * 365 * 24 * 3600
-const COMANDOS_CELULAR = new Set(['chats', 'abrir', 'novo', 'enviar', 'parar', 'permissao'])
+const PUBLICO = path.join(__dirname, 'public')
+const COOKIE = 'sb_web'
+const TEMPO_HTTP_MS = 20000
+const RECONFERIR_MS = +process.env.RECONFERIR_MS || 5 * 60 * 1000
 
-const hash = (s) => crypto.createHash('sha256').update(String(s)).digest('hex')
-const aleatorio = (n = 32) => crypto.randomBytes(n).toString('base64url')
-// placa do computador: 8 caracteres sem ambiguidade (sem 0/O, 1/I/L), mostrada como XXXX-XXXX
-const ALFABETO_PLACA = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
-function placaNova() {
-  for (;;) {
-    let p = ''
-    for (const b of crypto.randomBytes(8)) p += ALFABETO_PLACA[b % ALFABETO_PLACA.length]
-    if (!db.computadorPorPlaca(p)) return p
-  }
-}
-const normalizarPlaca = (t) => String(t || '').toUpperCase().replace(/[^A-Z0-9]/g, '')
-const formatarPlaca = (p) => p.slice(0, 4) + '-' + p.slice(4)
+const sha = (s) => crypto.createHash('sha256').update(String(s)).digest('hex')
+const aleatorio = (n = 12) => crypto.randomBytes(n).toString('base64url')
 const igual = (a, b) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b))
-
-fs.mkdirSync(path.join(DADOS, 'arquivos'), { recursive: true })
-const db = banco.abrir(DADOS)
-const migrados = db.migrarJson(path.join(DADOS, 'vinculos.json'))
-if (migrados) console.log(`vínculos importados do formato antigo: ${migrados} computador(es)`)
-for (const id of db.semPlaca()) db.placaDefinir(id, placaNova())
-const arqPath = (id) => path.join(DADOS, 'arquivos', id)
-const apagarArquivo = (id) => fs.rm(arqPath(id), { force: true }, () => {})
-
-const socketsComputador = new Map() // computadorId -> ws
-const socketsCelular = new Map() // celularId -> Set<ws>
-
-// ---------- limpeza periódica ----------
-function limpar() {
-  for (const id of db.limpar({ arquivoMs: ARQUIVO_TTL_MS, eventoMs: EVENTO_TTL_MS })) apagarArquivo(id)
-  const agora = Date.now()
-  for (const [k, j] of janelas) if (agora > j.ate) janelas.delete(k)
-}
-setInterval(limpar, 10 * 60 * 1000).unref()
+const ipDe = (req) => String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim()
 
 // ---------- limite por IP ----------
 const janelas = new Map()
@@ -71,69 +39,68 @@ function limite(ip, chave, max, ms) {
   janelas.set(k, j)
   return j.n <= max
 }
-const ipDe = (req) => String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim()
+setInterval(() => {
+  const agora = Date.now()
+  for (const [k, j] of janelas) if (agora > j.ate) janelas.delete(k)
+}, 10 * 60 * 1000).unref()
 
-// ---------- autenticação ----------
-function computadorDe(req) {
-  const m = /^Bearer ([\w-]+)\.([\w-]+)$/.exec(req.headers.authorization || '')
-  const c = m && db.computador(m[1])
-  return c && igual(c.hash, hash(m[2])) ? m[1] : null
+// ---------- sessão (cookie assinado) ----------
+const assinar = (p) => crypto.createHmac('sha256', SEGREDO).update(p).digest('base64url')
+function criarSessao(conta) {
+  const p = Buffer.from(JSON.stringify({ a: conta.account_id, e: conta.email, n: conta.name || '', x: Date.now() + SESSAO_MS })).toString('base64url')
+  return p + '.' + assinar(p)
 }
-function celularDe(req) {
+function sessaoDe(req) {
   const ck = Object.fromEntries(String(req.headers.cookie || '').split(/;\s*/).map((p) => p.split('=')).filter((p) => p.length === 2))
-  const m = /^([\w-]+)\.([\w-]+)$/.exec(ck[COOKIE] || '')
-  const c = m && db.celular(m[1])
-  return c && igual(c.hash, hash(m[2])) ? c : null
+  const [p, s] = String(ck[COOKIE] || '').split('.')
+  if (!p || !s || !igual(assinar(p), s)) return null
+  try {
+    const d = JSON.parse(Buffer.from(p, 'base64url').toString())
+    return d.x > Date.now() ? { conta: String(d.a), email: d.e, nome: d.n } : null
+  } catch {
+    return null
+  }
 }
+const cookieSessao = (valor, maxAge) => `${COOKIE}=${valor}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Strict`
+
+// ---------- conta (llm-access) ----------
+async function acessoPost(rota, corpo) {
+  const r = await fetch(ACCESS + rota, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corpo), signal: AbortSignal.timeout(15000) })
+  return { status: r.status, json: await r.json().catch(() => ({})) }
+}
+const conferidas = new Map() // sha(chave) -> { conta, ate }
+async function contaDaChave(chave) {
+  const k = sha(chave)
+  const c = conferidas.get(k)
+  if (c && c.ate > Date.now()) return c.conta
+  const r = await fetch(ACCESS + '/v1/auth/whoami', { headers: { Authorization: 'Bearer ' + chave }, signal: AbortSignal.timeout(15000) }).catch(() => null)
+  if (r && r.status === 200) {
+    const j = await r.json().catch(() => ({}))
+    if (j.account_id != null) {
+      conferidas.set(k, { conta: String(j.account_id), ate: Date.now() + RECONFERIR_MS })
+      return String(j.account_id)
+    }
+  }
+  conferidas.delete(k)
+  return r && (r.status === 401 || r.status === 403) ? null : undefined // undefined = não deu para conferir agora
+}
+
+// ---------- máquinas conectadas ----------
+const maquinas = new Map() // conta -> Map(maquinaId -> { ws, info, webs: Map(sid -> ws), pend: Map(rid -> fn), chave })
+const daConta = (conta) => maquinas.get(conta) || new Map()
+const publicas = (conta) => [...daConta(conta).values()].map((m) => m.info)
+const enviar = (ws, o) => ws.readyState === 1 && ws.send(JSON.stringify(o))
 
 // ---------- HTTP ----------
-const TIPOS = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json' }
-const CABECALHOS = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' wss: ws:; frame-ancestors 'none'" }
+const TIPOS = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json' }
+const CABECALHOS = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY' }
+const CSP_APP = "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: data:; script-src 'self' 'wasm-unsafe-eval'; worker-src blob: 'self'; connect-src 'self' wss: ws: blob: data:; frame-ancestors 'none'"
+const CSP_LOGIN = "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'; connect-src 'self'; frame-ancestors 'none'"
 
 function json(res, status, corpo, extra = {}) {
   res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...CABECALHOS, ...extra })
   res.end(JSON.stringify(corpo))
 }
-const nomeDoAparelho = (ua = '') => {
-  const so = /iPhone|iPad/.test(ua) ? 'iPhone' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Mac/.test(ua) ? 'Mac' : /Linux/.test(ua) ? 'Linux' : 'Celular'
-  const nav = /Edg\//.test(ua) ? 'Edge' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : /Firefox\//.test(ua) ? 'Firefox' : ''
-  return nav ? `${so} · ${nav}` : so
-}
-const limparNome = (n) => String(n || 'arquivo').replace(/[\u0000-\u001f\\/:*?"<>|]/g, '_').replace(/^\.+/, '').slice(0, 120) || 'arquivo'
-const publicoDe = (id) => db.celularesDe(id).map((c) => ({ ...c, online: socketsCelular.has(c.id) }))
-const avisarComputador = (id) => socketsComputador.get(id)?.send(JSON.stringify({ t: 'celulares', lista: publicoDe(id) }))
-
-function revogar(celularId) {
-  db.celularApagar(celularId)
-  for (const ws of socketsCelular.get(celularId) || []) ws.close(4001, 'revogado')
-  socketsCelular.delete(celularId)
-}
-
-// recebe o corpo para um arquivo em disco, com teto de tamanho
-function receberArquivo(req, res, destino, aoTerminar) {
-  const tam = +req.headers['content-length']
-  if (!tam || tam > MAX_ARQUIVO) {
-    req.resume()
-    return json(res, tam ? 413 : 411, { erro: tam ? `Arquivo grande demais (máximo ${MAX_ARQUIVO / 1024 / 1024} MB).` : 'Tamanho do arquivo não informado.' })
-  }
-  const saida = fs.createWriteStream(destino)
-  let recebido = 0
-  let estourou = false
-  req.on('data', (d) => {
-    recebido += d.length
-    if (recebido > MAX_ARQUIVO && !estourou) {
-      estourou = true
-      req.unpipe(saida)
-      saida.destroy()
-      fs.rm(destino, { force: true }, () => {})
-      json(res, 413, { erro: 'Arquivo grande demais.' })
-    }
-  })
-  req.pipe(saida)
-  saida.on('finish', () => !estourou && aoTerminar(recebido))
-  saida.on('error', () => !res.headersSent && json(res, 500, { erro: 'Não consegui gravar o arquivo.' }))
-}
-
 function lerJson(req, max = 4096) {
   return new Promise((resolve) => {
     let t = ''
@@ -154,158 +121,71 @@ function lerJson(req, max = 4096) {
     req.on('error', () => resolve(null))
   })
 }
+const pedirAoApp = (m, caminho) =>
+  new Promise((resolve) => {
+    const rid = aleatorio(8)
+    const t = setTimeout(() => (m.pend.delete(rid), resolve(null)), TEMPO_HTTP_MS)
+    m.pend.set(rid, (r) => (clearTimeout(t), m.pend.delete(rid), resolve(r)))
+    enviar(m.ws, { t: 'http', rid, caminho })
+  })
 
 const servidor = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x')
   const ip = ipDe(req)
   try {
-    if (url.pathname === '/health') return json(res, 200, { ok: true })
+    if (url.pathname === '/health') return json(res, 200, { ok: true, maquinas: [...maquinas.values()].reduce((n, m) => n + m.size, 0) })
 
-    if (req.method === 'POST' && url.pathname === '/api/registrar') {
-      if (!limite(ip, 'reg', 10 * LIM, 3600000)) return json(res, 429, { erro: 'Muitas tentativas.' })
-      const id = aleatorio(9)
-      const chave = aleatorio(32)
-      const placa = placaNova()
-      db.computadorNovo(id, hash(chave), placa)
-      db.evento(id, null, 'computador-registrado', ip)
-      return json(res, 200, { computadorId: id, chave, placa: formatarPlaca(placa) })
-    }
-
-    if (req.method === 'POST' && url.pathname === '/api/vinculo') {
-      const id = computadorDe(req)
-      if (!id) return json(res, 401, { erro: 'Computador não reconhecido.' })
-      if (!limite(ip, 'vin', 30 * LIM, 600000)) return json(res, 429, { erro: 'Muitas tentativas.' })
-      const codigo = aleatorio(18)
-      db.codigoNovo(codigo, id, Date.now() + VALIDADE_CODIGO_MS)
-      return json(res, 200, { codigo, expiraEm: VALIDADE_CODIGO_MS, placa: formatarPlaca(db.computador(id).placa) })
-    }
-
-    // a placa é o ID curto do computador, usado para vincular o celular digitando em vez de ler o QR
-    if (req.method === 'GET' && url.pathname === '/api/placa') {
-      const id = computadorDe(req)
-      if (!id) return json(res, 401, { erro: 'Computador não reconhecido.' })
-      return json(res, 200, { placa: formatarPlaca(db.computador(id).placa) })
-    }
-    if (req.method === 'POST' && url.pathname === '/api/placa/nova') {
-      const id = computadorDe(req)
-      if (!id) return json(res, 401, { erro: 'Computador não reconhecido.' })
-      db.placaDefinir(id, placaNova())
-      db.evento(id, null, 'placa-trocada', ip)
-      return json(res, 200, { placa: formatarPlaca(db.computador(id).placa) })
-    }
-
-    // celular digita a placa: mesma sessão de 10 anos do QR. Limites estritos por IP e globais contra tentativa em massa.
-    if (req.method === 'POST' && url.pathname === '/api/parear') {
-      if (!limite(ip, 'par', 8 * LIM, 600000) || !limite('global', 'par', 300 * LIM, 3600000)) return json(res, 429, { erro: 'Muitas tentativas. Aguarde alguns minutos.' })
-      const corpo = await lerJson(req)
-      const placa = normalizarPlaca(corpo?.placa)
-      const pc = placa.length === 8 ? db.computadorPorPlaca(placa) : null
-      if (!pc) return json(res, 404, { erro: 'Código não encontrado. Confira as letras e números mostrados no computador.' })
-      const celularId = aleatorio(9)
-      const token = aleatorio(32)
-      const nome = nomeDoAparelho(req.headers['user-agent'])
-      db.celularNovo(celularId, pc.id, hash(token), nome)
-      db.evento(pc.id, celularId, 'celular-vinculado', nome + ' (código)')
-      avisarComputador(pc.id)
-      return json(res, 200, { ok: true }, { 'Set-Cookie': `${COOKIE}=${celularId}.${token}; Path=/; Max-Age=${DEZ_ANOS}; HttpOnly; Secure; SameSite=Strict` })
-    }
-
-    if (req.method === 'GET' && url.pathname === '/api/celulares') {
-      const id = computadorDe(req)
-      if (!id) return json(res, 401, { erro: 'Computador não reconhecido.' })
-      return json(res, 200, { lista: publicoDe(id) })
-    }
-
-    if (req.method === 'GET' && url.pathname === '/api/eventos') {
-      const id = computadorDe(req)
-      if (!id) return json(res, 401, { erro: 'Computador não reconhecido.' })
-      return json(res, 200, { lista: db.eventosDe(id, 50) })
-    }
-
-    if (req.method === 'DELETE' && url.pathname.startsWith('/api/celulares/')) {
-      const id = computadorDe(req)
-      if (!id) return json(res, 401, { erro: 'Computador não reconhecido.' })
-      const cid = url.pathname.split('/').pop()
-      const c = db.celular(cid)
-      if (!c || c.computador_id !== id) return json(res, 404, { erro: 'Celular não encontrado.' })
-      revogar(cid)
-      db.evento(id, cid, 'celular-revogado', c.nome)
-      avisarComputador(id)
-      return json(res, 200, { ok: true })
-    }
-
-    // o celular lê o QR: consome o código, ganha o cookie e vai para o app
-    if (req.method === 'GET' && url.pathname.startsWith('/v/')) {
-      if (!limite(ip, 'v', 30 * LIM, 600000)) return json(res, 429, { erro: 'Muitas tentativas.' })
-      const v = db.codigoConsumir(url.pathname.slice(3))
-      if (!v) {
-        res.writeHead(410, { 'Content-Type': 'text/html; charset=utf-8', ...CABECALHOS })
-        return res.end('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><body style="font-family:system-ui;background:#16110d;color:#f3ece4;display:grid;place-items:center;min-height:100vh;margin:0;text-align:center;padding:24px"><div><h2>Código expirado</h2><p>Volte ao Segundo Cérebro no computador e gere um novo QR code.</p></div>')
+    if (req.method === 'POST' && url.pathname === '/api/entrar') {
+      if (!limite(ip, 'login', 20 * LIM, 600000)) return json(res, 429, { erro: 'Muitas tentativas. Aguarde alguns minutos.' })
+      const b = await lerJson(req)
+      if (!b?.email || !b?.senha) return json(res, 400, { erro: 'Informe e-mail e senha.' })
+      let r
+      try {
+        r = await acessoPost('/v1/auth/verify', { email: String(b.email).slice(0, 200), password: String(b.senha).slice(0, 200) })
+      } catch {
+        return json(res, 503, { erro: 'Não consegui falar com o servidor agora. Tente de novo em instantes.' })
       }
-      const celularId = aleatorio(9)
-      const token = aleatorio(32)
-      const nome = nomeDoAparelho(req.headers['user-agent'])
-      db.celularNovo(celularId, v.computador_id, hash(token), nome)
-      db.evento(v.computador_id, celularId, 'celular-vinculado', nome)
-      avisarComputador(v.computador_id)
-      res.writeHead(302, { Location: '/app', 'Set-Cookie': `${COOKIE}=${celularId}.${token}; Path=/; Max-Age=${DEZ_ANOS}; HttpOnly; Secure; SameSite=Strict`, 'Cache-Control': 'no-store', ...CABECALHOS })
-      return res.end()
+      if (r.status !== 200) return json(res, r.status === 429 ? 429 : r.status >= 500 ? 503 : r.status, { erro: r.json?.error?.message || 'Não foi possível entrar.' })
+      return json(res, 200, { ok: true, email: r.json.email, nome: r.json.name }, { 'Set-Cookie': cookieSessao(criarSessao(r.json), SESSAO_MS / 1000) })
     }
+    if (req.method === 'POST' && url.pathname === '/api/sair') return json(res, 200, { ok: true }, { 'Set-Cookie': cookieSessao('', 0) })
 
     if (req.method === 'GET' && url.pathname === '/api/eu') {
-      const c = celularDe(req)
-      return json(res, c ? 200 : 401, c ? { ok: true, nome: c.nome, computadorOnline: socketsComputador.has(c.computador_id), limiteArquivoMb: MAX_ARQUIVO / 1024 / 1024 } : { erro: 'Não vinculado.' })
+      const s = sessaoDe(req)
+      return s ? json(res, 200, { email: s.email, nome: s.nome }) : json(res, 401, { erro: 'Faça login.' })
+    }
+    if (req.method === 'GET' && url.pathname === '/api/maquinas') {
+      const s = sessaoDe(req)
+      return s ? json(res, 200, { lista: publicas(s.conta) }) : json(res, 401, { erro: 'Faça login.' })
     }
 
-    // celular envia um arquivo (anexo ou áudio) que o computador vai buscar
-    if (req.method === 'POST' && url.pathname === '/api/celular/arquivo') {
-      const c = celularDe(req)
-      if (!c) {
-        req.resume()
-        return json(res, 401, { erro: 'Não vinculado.' })
+    // a interface do app, buscada no próprio app pelo túnel
+    const mm = req.method === 'GET' && /^\/m\/([\w-]{4,64})(\/.*)?$/.exec(url.pathname)
+    if (mm) {
+      const s = sessaoDe(req)
+      if (!s) {
+        res.writeHead(302, { Location: '/', ...CABECALHOS })
+        return res.end()
       }
-      if (!limite(ip, 'up', 60 * LIM, 600000)) {
-        req.resume()
-        return json(res, 429, { erro: 'Muitos envios. Espere um pouco.' })
+      if (!mm[2]) {
+        res.writeHead(302, { Location: `/m/${mm[1]}/`, ...CABECALHOS })
+        return res.end()
       }
-      const pend = db.arquivosDe(c.computador_id)
-      if (pend.n >= MAX_PENDENTES || pend.bytes >= MAX_BYTES_PENDENTES) {
-        req.resume()
-        return json(res, 429, { erro: 'O computador ainda não buscou os arquivos anteriores.' })
-      }
-      const id = aleatorio(15)
-      const nome = limparNome(url.searchParams.get('nome'))
-      const tipo = String(req.headers['content-type'] || 'application/octet-stream').split(';')[0].slice(0, 80)
-      return receberArquivo(req, res, arqPath(id), (tamanho) => {
-        db.arquivoNovo({ id, computadorId: c.computador_id, celularId: c.id, nome, tipo, tamanho })
-        db.evento(c.computador_id, c.id, 'arquivo-enviado', `${nome} (${tamanho} bytes)`)
-        json(res, 200, { id, nome, tipo, tamanho })
-      })
+      const m = daConta(s.conta).get(mm[1])
+      if (!m) return json(res, 404, { erro: 'Este computador não está conectado agora.' })
+      const caminho = mm[2] === '/' ? 'web.html' : decodeURIComponent(mm[2].slice(1))
+      const r = await pedirAoApp(m, caminho)
+      if (!r) return json(res, 504, { erro: 'O computador não respondeu.' })
+      res.writeHead(r.status || 200, { 'Content-Type': r.tipo || 'application/octet-stream', 'Cache-Control': 'no-cache', 'Content-Security-Policy': CSP_APP, ...CABECALHOS })
+      return res.end(Buffer.from(r.b64 || '', 'base64'))
     }
 
-    // o computador busca o arquivo; depois de baixar, a ponte apaga
-    if (req.method === 'GET' && url.pathname.startsWith('/api/arquivos/')) {
-      const pc = computadorDe(req)
-      if (!pc) return json(res, 401, { erro: 'Computador não reconhecido.' })
-      const a = db.arquivo(url.pathname.split('/').pop())
-      if (!a || a.computador_id !== pc || !fs.existsSync(arqPath(a.id))) return json(res, 404, { erro: 'Arquivo não encontrado.' })
-      res.writeHead(200, { 'Content-Type': a.tipo, 'Content-Length': a.tamanho, 'Cache-Control': 'no-store', 'X-Nome': encodeURIComponent(a.nome) })
-      const s = fs.createReadStream(arqPath(a.id))
-      s.pipe(res)
-      res.on('finish', () => {
-        db.arquivoApagar(a.id)
-        apagarArquivo(a.id)
-        db.evento(pc, a.celular_id, 'arquivo-entregue', a.nome)
-      })
-      return
-    }
-
-    // arquivos estáticos
+    // página de login e escolha da máquina
     if (req.method === 'GET') {
-      const rel = url.pathname === '/' || url.pathname === '/app' ? '/app.html' : url.pathname
+      const rel = url.pathname === '/' ? '/index.html' : url.pathname
       const arq = path.join(PUBLICO, path.normalize(rel))
       if (arq.startsWith(PUBLICO + path.sep) && fs.existsSync(arq) && fs.statSync(arq).isFile()) {
-        res.writeHead(200, { 'Content-Type': TIPOS[path.extname(arq)] || 'application/octet-stream', 'Cache-Control': 'no-cache', ...CABECALHOS })
+        res.writeHead(200, { 'Content-Type': TIPOS[path.extname(arq)] || 'application/octet-stream', 'Cache-Control': 'no-cache', 'Content-Security-Policy': CSP_LOGIN, ...CABECALHOS })
         return fs.createReadStream(arq).pipe(res)
       }
     }
@@ -318,23 +198,6 @@ const servidor = http.createServer(async (req, res) => {
 
 // ---------- WebSocket ----------
 const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MSG })
-
-servidor.on('upgrade', (req, socket, head) => {
-  const url = new URL(req.url, 'http://x')
-  if (!limite(ipDe(req), 'ws', 120 * LIM, 600000)) return socket.destroy()
-  if (url.pathname === '/ws/computador') {
-    const id = computadorDe(req)
-    if (!id) return socket.destroy()
-    return wss.handleUpgrade(req, socket, head, (ws) => ligarComputador(ws, id))
-  }
-  if (url.pathname === '/ws/celular') {
-    const c = celularDe(req)
-    if (!c) return socket.destroy()
-    return wss.handleUpgrade(req, socket, head, (ws) => ligarCelular(ws, c))
-  }
-  socket.destroy()
-})
-
 const batida = (ws) => {
   ws.vivo = true
   ws.on('pong', () => (ws.vivo = true))
@@ -350,68 +213,87 @@ setInterval(() => {
   }
 }, 30000).unref()
 
-const paraCelulares = (computadorId, so, fn) => {
-  for (const c of db.celularesDe(computadorId)) if (!so || so === c.id) for (const s of socketsCelular.get(c.id) || []) fn(s)
-}
+servidor.on('upgrade', async (req, socket, head) => {
+  const url = new URL(req.url, 'http://x')
+  if (!limite(ipDe(req), 'ws', 240 * LIM, 600000)) return socket.destroy()
+  socket.on('error', () => {})
+  if (url.pathname === '/ws/maquina') {
+    const chave = /^Bearer (\S{10,200})$/.exec(req.headers.authorization || '')?.[1]
+    const conta = chave ? await contaDaChave(chave) : null
+    if (!conta) return socket.destroy()
+    return wss.handleUpgrade(req, socket, head, (ws) => ligarMaquina(ws, conta, chave))
+  }
+  if (url.pathname === '/ws/web') {
+    const s = sessaoDe(req)
+    const origem = req.headers.origin
+    if (!s || (origem && new URL(origem).host !== req.headers.host)) return socket.destroy()
+    const m = daConta(s.conta).get(String(url.searchParams.get('m') || ''))
+    return wss.handleUpgrade(req, socket, head, (ws) => ligarWeb(ws, s, String(url.searchParams.get('m') || ''), m))
+  }
+  socket.destroy()
+})
 
-function ligarComputador(ws, id) {
+function ligarMaquina(ws, conta, chave) {
   batida(ws)
-  socketsComputador.get(id)?.close(4002, 'outra conexão')
-  socketsComputador.set(id, ws)
-  db.computadorVisto(id)
-  ws.send(JSON.stringify({ t: 'celulares', lista: publicoDe(id) }))
-  paraCelulares(id, null, (s) => s.send(JSON.stringify({ t: 'estado', online: true })))
+  let m = null
+  const aposta = setTimeout(() => !m && ws.close(4000, 'sem identificação'), 10000)
+  const reconferir = setInterval(async () => {
+    if ((await contaDaChave(chave)) === null) ws.close(4004, 'assinatura inativa') // sem assinatura, perde o acesso web
+  }, RECONFERIR_MS)
+  reconferir.unref()
   ws.on('message', (dado) => {
-    let m
+    let msg
     try {
-      m = JSON.parse(String(dado))
+      msg = JSON.parse(String(dado))
     } catch {
       return
     }
-    const { para, ...resto } = m
-    paraCelulares(id, para, (s) => s.send(JSON.stringify(resto)))
+    if (!m) {
+      if (msg.t !== 'hello' || !/^[\w-]{4,64}$/.test(String(msg.maquinaId))) return ws.close(4000, 'identificação inválida')
+      clearTimeout(aposta)
+      const id = String(msg.maquinaId)
+      if (!maquinas.has(conta)) maquinas.set(conta, new Map())
+      maquinas.get(conta).get(id)?.ws.close(4002, 'outra conexão')
+      m = { ws, chave, webs: new Map(), pend: new Map(), info: { id, nome: String(msg.nome || 'Computador').slice(0, 60), tipo: msg.tipo === 'vm' ? 'vm' : 'desktop', versao: String(msg.versao || '').slice(0, 20), desde: Date.now() } }
+      maquinas.get(conta).set(id, m)
+      return enviar(ws, { t: 'ok' })
+    }
+    if (msg.t === 'http-r') return m.pend.get(msg.rid)?.(msg)
+    const alvo = msg.para ? [m.webs.get(msg.para)].filter(Boolean) : [...m.webs.values()]
+    if (msg.t === 'ret' || msg.t === 'ev') for (const w of alvo) enviar(w, { ...msg, para: undefined })
   })
   ws.on('close', () => {
-    if (socketsComputador.get(id) !== ws) return
-    socketsComputador.delete(id)
-    paraCelulares(id, null, (s) => s.send(JSON.stringify({ t: 'estado', online: false })))
+    clearTimeout(aposta)
+    clearInterval(reconferir)
+    if (!m) return
+    if (maquinas.get(conta)?.get(m.info.id) === m) maquinas.get(conta).delete(m.info.id)
+    if (!maquinas.get(conta)?.size) maquinas.delete(conta)
+    for (const w of m.webs.values()) enviar(w, { t: 'estado', online: false })
   })
 }
 
-function ligarCelular(ws, c) {
+function ligarWeb(ws, sessao, maquinaId, m) {
   batida(ws)
-  if (!socketsCelular.has(c.id)) socketsCelular.set(c.id, new Set())
-  socketsCelular.get(c.id).add(ws)
-  db.celularVisto(c.id)
-  ws.send(JSON.stringify({ t: 'estado', online: socketsComputador.has(c.computador_id) }))
-  avisarComputador(c.computador_id)
+  if (!m) {
+    enviar(ws, { t: 'estado', online: false })
+    return ws.close(4003, 'computador offline')
+  }
+  const sid = aleatorio(9)
+  m.webs.set(sid, ws)
+  enviar(ws, { t: 'estado', online: true, maquina: m.info })
   ws.on('message', (dado) => {
-    let m
+    let msg
     try {
-      m = JSON.parse(String(dado))
+      msg = JSON.parse(String(dado))
     } catch {
       return
     }
-    if (!COMANDOS_CELULAR.has(m.t) || !db.celular(c.id)) return
-    // anexos: só vale o que este celular realmente enviou (nome e tipo vêm do registro, não do cliente)
-    if (m.t === 'enviar') {
-      const anexos = []
-      for (const a of Array.isArray(m.arquivos) ? m.arquivos.slice(0, 10) : []) {
-        const reg = db.arquivo(String(a?.id))
-        if (reg && reg.celular_id === c.id) anexos.push({ id: reg.id, nome: reg.nome, tipo: reg.tipo, tamanho: reg.tamanho })
-      }
-      m = { t: 'enviar', id: m.id, texto: String(m.texto || '').slice(0, 8000), arquivos: anexos }
-    }
-    const pc = socketsComputador.get(c.computador_id)
-    if (pc) pc.send(JSON.stringify({ ...m, de: c.id }))
-    else ws.send(JSON.stringify({ t: 'estado', online: false }))
+    if (msg.t !== 'inv' || typeof msg.canal !== 'string' || msg.canal.length > 80) return
+    if (m.ws.readyState !== 1) return enviar(ws, { t: 'estado', online: false })
+    enviar(m.ws, { t: 'inv', id: msg.id, canal: msg.canal, args: Array.isArray(msg.args) ? msg.args : [], de: sid })
   })
-  ws.on('close', () => {
-    socketsCelular.get(c.id)?.delete(ws)
-    if (!socketsCelular.get(c.id)?.size) socketsCelular.delete(c.id)
-    avisarComputador(c.computador_id)
-  })
+  ws.on('close', () => m.webs.delete(sid))
 }
 
-if (require.main === module) servidor.listen(PORTA, () => console.log('ponte remota na porta', PORTA))
-module.exports = { servidor, db, limpar }
+if (require.main === module) servidor.listen(PORTA, () => console.log('ponte remota (acesso web) na porta', PORTA))
+module.exports = { servidor, maquinas }

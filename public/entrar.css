@@ -1,0 +1,27 @@
+:root{--bg:#16110d;--card:#1f1a15;--borda:#33291f;--texto:#f3ece4;--suave:#a89b8c;--cor:#e8a35c;--cor-texto:#1a120a;--erro:#ff8a7a}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:var(--bg);color:var(--texto);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+body{min-height:100dvh;display:grid;place-items:center;padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left))}
+main{width:100%;max-width:420px}
+.marca{display:flex;align-items:center;gap:14px;margin-bottom:8px}
+.marca img{border-radius:14px}
+h1{font-size:1.5rem;margin:0;letter-spacing:-.01em}
+.sub{color:var(--suave);margin:8px 0 22px}
+form{display:grid;gap:14px;background:var(--card);border:1px solid var(--borda);border-radius:16px;padding:20px}
+label{display:grid;gap:6px;font-size:.9rem;color:var(--suave)}
+input{font:inherit;color:var(--texto);background:#120e0a;border:1px solid var(--borda);border-radius:10px;padding:12px 14px;min-height:46px}
+input:focus{outline:2px solid var(--cor);outline-offset:1px;border-color:transparent}
+button{font:inherit;font-weight:600;border:0;border-radius:10px;padding:12px 16px;min-height:46px;cursor:pointer;background:var(--cor);color:var(--cor-texto)}
+button:disabled{opacity:.6;cursor:default}
+button.sec{background:transparent;color:var(--texto);border:1px solid var(--borda)}
+.erro{color:var(--erro);margin:0;font-size:.9rem}
+ul{list-style:none;margin:0 0 16px;padding:0;display:grid;gap:10px}
+li a{display:flex;align-items:center;gap:12px;text-decoration:none;color:var(--texto);background:var(--card);border:1px solid var(--borda);border-radius:14px;padding:16px;min-height:64px}
+li a:hover,li a:focus-visible{border-color:var(--cor);outline:none}
+li .nome{font-weight:600}
+li .det{display:block;font-size:.82rem;color:var(--suave)}
+li .ponto{width:10px;height:10px;border-radius:50%;background:#58c27d;flex:none}
+.vazio{color:var(--suave);background:var(--card);border:1px dashed var(--borda);border-radius:14px;padding:16px}
+.acoes{display:flex;gap:10px}
+.acoes button{flex:1}
+[hidden]{display:none!important}

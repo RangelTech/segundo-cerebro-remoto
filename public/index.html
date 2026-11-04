@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#16110d">
+<title>Segundo Cérebro</title>
+<link rel="icon" href="icone-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="entrar.css">
+</head>
+<body>
+<main>
+  <div class="marca"><img src="icone-192.png" alt="" width="56" height="56"><h1>Segundo Cérebro</h1></div>
+
+  <section id="login" hidden>
+    <p class="sub">Entre com a sua conta para controlar o seu Segundo Cérebro de qualquer lugar.</p>
+    <form id="form" autocomplete="on">
+      <label>E-mail<input id="email" type="email" name="email" autocomplete="username" required autofocus></label>
+      <label>Senha<input id="senha" type="password" name="password" autocomplete="current-password" required></label>
+      <p id="erro" class="erro" role="alert" hidden></p>
+      <button id="entrar" type="submit">Entrar</button>
+    </form>
+  </section>
+
+  <section id="escolha" hidden>
+    <p class="sub">Olá, <b id="quem"></b>. Qual computador você quer controlar?</p>
+    <ul id="lista"></ul>
+    <p id="vazio" class="vazio" hidden>Nenhum computador conectado agora. No Segundo Cérebro instalado, abra Configurações e ligue <b>Permitir acesso pela web</b>. Se for uma máquina virtual, confira se ela está ligada.</p>
+    <div class="acoes"><button id="atualizar" class="sec" type="button">Atualizar</button><button id="sair" class="sec" type="button">Sair</button></div>
+  </section>
+</main>
+<script src="entrar.js"></script>
+</body>
+</html>

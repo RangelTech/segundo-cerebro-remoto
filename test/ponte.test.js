@@ -1,238 +1,169 @@
-process.env.DATA_DIR = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'ponte-'))
-process.env.CODIGO_MS = '1500'
+// Ponte v2: login pela conta, sessão, máquinas conectadas, relay web<->app e interface servida pelo app.
 process.env.LIMITE_MULT = '1000'
-process.env.MAX_ARQUIVO_MB = '1'
-process.env.MAX_PENDENTES = '3'
+process.env.SESSION_SECRET = 'segredo-de-teste'
 const test = require('node:test')
-const assert = require('node:assert')
+const assert = require('node:assert/strict')
+const http = require('http')
 const WebSocket = require('ws')
-const { servidor, db, limpar } = require('../server')
-const fs = require('fs')
-const path = require('path')
 
-let base
+let acesso, ponte, urlPonte, portaPonte
+const SENHA = 'senha-forte-123'
+const CHAVE = 'sk-chave-da-maquina-0001'
+
 test.before(async () => {
-  await new Promise((r) => servidor.listen(0, r))
-  base = `http://127.0.0.1:${servidor.address().port}`
+  // llm-access de mentira
+  acesso = http.createServer((req, res) => {
+    let t = ''
+    req.on('data', (d) => (t += d))
+    req.on('end', () => {
+      const out = (st, o) => (res.writeHead(st, { 'Content-Type': 'application/json' }), res.end(JSON.stringify(o)))
+      if (req.url === '/v1/auth/verify') {
+        const b = JSON.parse(t || '{}')
+        if (b.email === 'ana@x.com' && b.password === SENHA) return out(200, { account_id: 7, email: 'ana@x.com', name: 'Ana' })
+        if (b.email === 'inativa@x.com') return out(403, { error: { message: 'sua assinatura nao esta ativa' } })
+        return out(401, { error: { message: 'e-mail ou senha incorretos' } })
+      }
+      if (req.url === '/v1/auth/whoami') {
+        const k = req.headers.authorization
+        if (k === 'Bearer ' + CHAVE) return out(200, { account_id: 7, email: 'ana@x.com', name: 'Ana' })
+        if (k === 'Bearer sk-chave-de-outra-conta') return out(200, { account_id: 9, email: 'bia@x.com', name: 'Bia' })
+        return out(401, { error: { message: 'invalida' } })
+      }
+      out(404, {})
+    })
+  })
+  await new Promise((r) => acesso.listen(0, '127.0.0.1', r))
+  process.env.ACCESS_URL = 'http://127.0.0.1:' + acesso.address().port
+  ponte = require('../server').servidor
+  await new Promise((r) => ponte.listen(0, '127.0.0.1', r))
+  portaPonte = ponte.address().port
+  urlPonte = 'http://127.0.0.1:' + portaPonte
 })
-test.after(() => { servidor.closeAllConnections(); servidor.close(); setTimeout(() => process.exit(0), 200).unref() })
+test.after(() => {
+  acesso.close()
+  ponte.close()
+  ponte.closeAllConnections?.()
+  setImmediate(() => process.exit(0))
+})
 
-const post = (p, auth, metodo = 'POST') => fetch(base + p, { method: metodo, headers: auth ? { Authorization: 'Bearer ' + auth } : {} })
-async function registrar() {
-  const r = await (await post('/api/registrar')).json()
-  return { id: r.computadorId, auth: `${r.computadorId}.${r.chave}`, chave: r.chave }
+const post = (rota, corpo, cookie) => fetch(urlPonte + rota, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify(corpo) })
+const get = (rota, cookie) => fetch(urlPonte + rota, { headers: cookie ? { Cookie: cookie } : {}, redirect: 'manual' })
+async function entrar(email = 'ana@x.com', senha = SENHA) {
+  const r = await post('/api/entrar', { email, senha })
+  const c = (r.headers.get('set-cookie') || '').split(';')[0]
+  return { r, cookie: c }
 }
-async function vincular(pc) {
-  const v = await (await post('/api/vinculo', pc.auth)).json()
-  const r = await fetch(`${base}/v/${v.codigo}`, { redirect: 'manual', headers: { 'user-agent': 'Mozilla/5.0 (iPhone) Safari/604' } })
-  return { status: r.status, cookie: (r.headers.get('set-cookie') || '').split(';')[0], setcookie: r.headers.get('set-cookie') || '', codigo: v.codigo }
+// guarda as mensagens desde a abertura (a ponte manda "estado" assim que conecta, antes do teste começar a escutar)
+const abrir = (rota, opts) => new Promise((res, rej) => {
+  const w = new WebSocket('ws://127.0.0.1:' + portaPonte + rota, opts)
+  w.fila = []
+  w.on('message', (d) => w.fila.push(JSON.parse(String(d))))
+  w.once('open', () => res(w))
+  w.once('error', rej)
+  w.once('unexpected-response', (_q, p) => rej(new Error('http ' + p.statusCode)))
+})
+const proxima = (w, filtro = () => true) => new Promise((res) => {
+  const achar = () => { const i = w.fila.findIndex(filtro); if (i < 0) return false; res(w.fila.splice(i, 1)[0]); return true }
+  if (achar()) return
+  const f = () => achar() && w.off('message', f)
+  w.on('message', f)
+})
+
+// máquina de mentira: responde ao que a ponte pede
+async function maquina(chave = CHAVE, id = 'pc-da-ana') {
+  const w = await abrir('/ws/maquina', { headers: { Authorization: 'Bearer ' + chave } })
+  const ok = proxima(w, (m) => m.t === 'ok')
+  w.send(JSON.stringify({ t: 'hello', maquinaId: id, nome: 'PC da Ana', tipo: 'desktop', versao: '0.5.3' }))
+  await ok
+  w.on('message', (d) => {
+    const m = JSON.parse(String(d))
+    if (m.t === 'http') w.send(JSON.stringify({ t: 'http-r', rid: m.rid, status: m.caminho === 'web.html' ? 200 : 404, tipo: 'text/html', b64: Buffer.from('<h1>interface ' + m.caminho + '</h1>').toString('base64') }))
+    if (m.t === 'inv') {
+      w.send(JSON.stringify({ t: 'ret', para: m.de, id: m.id, ok: true, valor: { eco: m.canal, args: m.args } }))
+      w.send(JSON.stringify({ t: 'ev', canal: 'chat:delta', dados: { texto: 'oi' }, para: m.de }))
+    }
+  })
+  return w
 }
-const abrir = (url, headers) => new Promise((res, rej) => { const w = new WebSocket(url, { headers }); w.once('open', () => res(w)); w.once('error', rej); w.once('unexpected-response', () => rej(new Error('recusado'))) })
-const proxima = (w, filtro = () => true) => new Promise((res) => { const f = (d) => { const m = JSON.parse(String(d)); if (filtro(m)) { w.off('message', f); res(m) } }; w.on('message', f) })
 
-test('computador sem credencial é recusado', async () => {
-  assert.equal((await post('/api/vinculo')).status, 401)
-  assert.equal((await post('/api/vinculo', 'x.y')).status, 401)
-})
-
-test('vínculo: cookie de 10 anos, HttpOnly, e o código só vale uma vez', async () => {
-  const pc = await registrar()
-  const v = await vincular(pc)
-  assert.equal(v.status, 302)
-  assert.match(v.setcookie, /HttpOnly/)
-  assert.match(v.setcookie, /Secure/)
-  assert.match(v.setcookie, /SameSite=Strict/)
-  assert.match(v.setcookie, /Max-Age=315360000/)
-  const de_novo = await fetch(`${base}/v/${v.codigo}`, { redirect: 'manual' })
-  assert.equal(de_novo.status, 410)
-})
-
-test('código expira', async () => {
-  const pc = await registrar()
-  const v = await (await post('/api/vinculo', pc.auth)).json()
-  await new Promise((r) => setTimeout(r, 1700))
-  assert.equal((await fetch(`${base}/v/${v.codigo}`, { redirect: 'manual' })).status, 410)
-})
-
-test('um código ativo por computador: o novo invalida o anterior', async () => {
-  const pc = await registrar()
-  const a = await (await post('/api/vinculo', pc.auth)).json()
-  await (await post('/api/vinculo', pc.auth)).json()
-  assert.equal((await fetch(`${base}/v/${a.codigo}`, { redirect: 'manual' })).status, 410)
-})
-
-test('repasse nos dois sentidos e identificação do celular', async () => {
-  const pc = await registrar()
-  const v = await vincular(pc)
-  const wpc = await abrir(base.replace('http', 'ws') + '/ws/computador', { Authorization: 'Bearer ' + pc.auth })
-  const wcel = await abrir(base.replace('http', 'ws') + '/ws/celular', { Cookie: v.cookie })
-  const recebidoNoPc = proxima(wpc, (m) => m.t === 'enviar')
-  wcel.send(JSON.stringify({ t: 'enviar', id: 'c1', texto: 'oi' }))
-  const m = await recebidoNoPc
-  assert.equal(m.texto, 'oi')
-  assert.ok(m.de)
-  const recebidoNoCel = proxima(wcel, (x) => x.t === 'delta')
-  wpc.send(JSON.stringify({ para: m.de, t: 'delta', id: 'c1', texto: 'olá' }))
-  assert.equal((await recebidoNoCel).texto, 'olá')
-  wpc.close()
-  wcel.close()
-})
-
-test('celular não conecta sem cookie nem com cookie falso', async () => {
-  await assert.rejects(abrir(base.replace('http', 'ws') + '/ws/celular', {}))
-  await assert.rejects(abrir(base.replace('http', 'ws') + '/ws/celular', { Cookie: 'sb_cel=abc.def' }))
-})
-
-test('revogar derruba o celular na hora e o cookie deixa de valer', async () => {
-  const pc = await registrar()
-  const v = await vincular(pc)
-  const wcel = await abrir(base.replace('http', 'ws') + '/ws/celular', { Cookie: v.cookie })
-  const lista = (await (await post('/api/celulares', pc.auth, 'GET')).json()).lista
-  assert.equal(lista.length, 1)
-  assert.equal(lista[0].nome, 'iPhone · Safari')
-  const fechou = new Promise((r) => wcel.once('close', (c) => r(c)))
-  assert.equal((await post('/api/celulares/' + lista[0].id, pc.auth, 'DELETE')).status, 200)
-  assert.equal(await fechou, 4001)
-  assert.equal((await fetch(base + '/api/eu', { headers: { Cookie: v.cookie } })).status, 401)
-  await assert.rejects(abrir(base.replace('http', 'ws') + '/ws/celular', { Cookie: v.cookie }))
-})
-
-test('um computador não revoga celular de outro', async () => {
-  const a = await registrar()
-  const b = await registrar()
-  await vincular(a)
-  const lista = (await (await post('/api/celulares', a.auth, 'GET')).json()).lista
-  assert.equal((await post('/api/celulares/' + lista[0].id, b.auth, 'DELETE')).status, 404)
-})
-
-test('computador offline: celular é avisado', async () => {
-  const pc = await registrar()
-  const v = await vincular(pc)
-  const wcel = new WebSocket(base.replace('http', 'ws') + '/ws/celular', { headers: { Cookie: v.cookie } })
-  const e = await new Promise((res) => wcel.on('message', (d) => { const m = JSON.parse(String(d)); if (m.t === 'estado') res(m) }))
-  assert.equal(e.online, false)
-  wcel.close()
-})
-
-// ---------- arquivos, auditoria e banco ----------
-const enviarArquivo = (cookie, nome, corpo, tipo = 'text/plain') => fetch(`${base}/api/celular/arquivo?nome=${encodeURIComponent(nome)}`, { method: 'POST', headers: { Cookie: cookie, 'Content-Type': tipo }, body: corpo })
-
-test('arquivo do celular: sobe, o computador baixa uma vez e a ponte apaga', async () => {
-  const pc = await registrar()
-  const v = await vincular(pc)
-  const r = await enviarArquivo(v.cookie, '../../etc/passwd', 'conteudo do anexo')
+test('login: senha errada, assinatura inativa e sucesso com cookie', async () => {
+  assert.equal((await entrar('ana@x.com', 'errada-123')).r.status, 401)
+  assert.equal((await entrar('inativa@x.com')).r.status, 403)
+  const { r, cookie } = await entrar()
   assert.equal(r.status, 200)
-  const a = await r.json()
-  assert.ok(!a.nome.includes('/') && !a.nome.startsWith('.'), 'nome saneado: ' + a.nome)
-  const dl = await fetch(`${base}/api/arquivos/${a.id}`, { headers: { Authorization: 'Bearer ' + pc.auth } })
-  assert.equal(dl.status, 200)
-  assert.equal(await dl.text(), 'conteudo do anexo')
-  await new Promise((r) => setTimeout(r, 100))
-  assert.equal((await fetch(`${base}/api/arquivos/${a.id}`, { headers: { Authorization: 'Bearer ' + pc.auth } })).status, 404)
-  assert.equal(db.arquivo(a.id), undefined)
+  assert.match(r.headers.get('set-cookie'), /HttpOnly.*Secure.*SameSite=Strict/)
+  const eu = await get('/api/eu', cookie)
+  assert.equal(eu.status, 200)
+  assert.equal((await eu.json()).email, 'ana@x.com')
+  assert.equal((await get('/api/eu')).status, 401)
+  assert.equal((await get('/api/eu', cookie.slice(0, -3) + 'xxx')).status, 401) // cookie adulterado
 })
 
-test('arquivo: outro computador não baixa, sem cookie não envia, acima do limite é recusado', async () => {
-  const a = await registrar()
-  const b = await registrar()
-  const va = await vincular(a)
-  assert.equal((await enviarArquivo('', 'x.txt', 'oi')).status, 401)
-  const ok = await (await enviarArquivo(va.cookie, 'x.txt', 'oi')).json()
-  assert.equal((await fetch(`${base}/api/arquivos/${ok.id}`, { headers: { Authorization: 'Bearer ' + b.auth } })).status, 404)
-  const grande = await enviarArquivo(va.cookie, 'grande.bin', Buffer.alloc(1024 * 1024 + 10), 'application/octet-stream')
-  assert.equal(grande.status, 413)
+test('máquina com chave inválida não conecta; a da conta aparece só para a dona', async () => {
+  await assert.rejects(() => abrir('/ws/maquina', { headers: { Authorization: 'Bearer chave-errada-1234' } }))
+  const m = await maquina()
+  const { cookie } = await entrar()
+  const lista = (await (await get('/api/maquinas', cookie)).json()).lista
+  assert.equal(lista.length, 1)
+  assert.deepEqual([lista[0].id, lista[0].nome, lista[0].tipo], ['pc-da-ana', 'PC da Ana', 'desktop'])
+  // outra conta não enxerga nem abre
+  const outra = await maquina('sk-chave-de-outra-conta', 'pc-da-bia')
+  assert.equal((await (await get('/api/maquinas', cookie)).json()).lista.length, 1)
+  assert.equal((await get('/m/pc-da-bia/', cookie)).status, 404)
+  m.close()
+  outra.close()
 })
 
-test('limite de arquivos pendentes por computador', async () => {
-  const pc = await registrar()
-  const v = await vincular(pc)
-  for (let i = 0; i < 3; i++) assert.equal((await enviarArquivo(v.cookie, `a${i}.txt`, 'x')).status, 200)
-  assert.equal((await enviarArquivo(v.cookie, 'a4.txt', 'x')).status, 429)
+test('a interface vem do app pelo túnel e exige login', async () => {
+  const m = await maquina()
+  const { cookie } = await entrar()
+  assert.equal((await get('/m/pc-da-ana/')).status, 302) // sem login volta para a entrada
+  assert.equal((await get('/m/pc-da-ana', cookie)).status, 302)
+  const pagina = await get('/m/pc-da-ana/', cookie)
+  assert.equal(pagina.status, 200)
+  assert.equal(await pagina.text(), '<h1>interface web.html</h1>')
+  assert.match(pagina.headers.get('content-security-policy'), /script-src 'self'/)
+  assert.equal((await get('/m/pc-da-ana/nao-existe.js', cookie)).status, 404)
+  m.close()
 })
 
-test('enviar com arquivos: a ponte só repassa o que o celular realmente enviou, com nome do registro', async () => {
-  const pc = await registrar()
-  const v = await vincular(pc)
-  const outro = await vincular(pc)
-  const meu = await (await enviarArquivo(v.cookie, 'meu.txt', 'a')).json()
-  const alheio = await (await enviarArquivo(outro.cookie, 'alheio.txt', 'b')).json()
-  const wpc = await abrir(base.replace('http', 'ws') + '/ws/computador', { Authorization: 'Bearer ' + pc.auth })
-  const wcel = await abrir(base.replace('http', 'ws') + '/ws/celular', { Cookie: v.cookie })
-  const chegou = proxima(wpc, (m) => m.t === 'enviar')
-  wcel.send(JSON.stringify({ t: 'enviar', id: 'c1', texto: 'veja', arquivos: [{ id: meu.id, nome: 'FORJADO.exe' }, { id: alheio.id }, { id: 'inexistente' }] }))
-  const m = await chegou
-  assert.equal(m.arquivos.length, 1)
-  assert.equal(m.arquivos[0].id, meu.id)
-  assert.equal(m.arquivos[0].nome, 'meu.txt')
-  wpc.close()
-  wcel.close()
+test('web <-> app: chamada, resposta e evento chegam só para quem pediu', async () => {
+  const m = await maquina()
+  const { cookie } = await entrar()
+  const w1 = await abrir('/ws/web?m=pc-da-ana', { headers: { Cookie: cookie } })
+  const w2 = await abrir('/ws/web?m=pc-da-ana', { headers: { Cookie: cookie } })
+  await proxima(w1, (x) => x.t === 'estado')
+  await proxima(w2, (x) => x.t === 'estado')
+  const ret = proxima(w1, (x) => x.t === 'ret')
+  const ev = proxima(w1, (x) => x.t === 'ev')
+  let w2Recebeu = false
+  w2.on('message', (d) => { const x = JSON.parse(String(d)); if (x.t === 'ret' || x.t === 'ev') w2Recebeu = true })
+  w1.send(JSON.stringify({ t: 'inv', id: 1, canal: 'chats:get', args: ['a'] }))
+  const r = await ret
+  assert.deepEqual([r.id, r.ok, r.valor], [1, true, { eco: 'chats:get', args: ['a'] }])
+  assert.equal((await ev).dados.texto, 'oi')
+  await new Promise((r) => setTimeout(r, 150))
+  assert.equal(w2Recebeu, false)
+  w1.close(); w2.close(); m.close()
 })
 
-test('comando desconhecido do celular não é repassado', async () => {
-  const pc = await registrar()
-  const v = await vincular(pc)
-  const wpc = await abrir(base.replace('http', 'ws') + '/ws/computador', { Authorization: 'Bearer ' + pc.auth })
-  const wcel = await abrir(base.replace('http', 'ws') + '/ws/celular', { Cookie: v.cookie })
-  const recebidos = []
-  wpc.on('message', (d) => recebidos.push(JSON.parse(String(d))))
-  wcel.send(JSON.stringify({ t: 'rm-rf' }))
-  wcel.send(JSON.stringify({ t: 'chats' }))
-  await new Promise((r) => setTimeout(r, 200))
-  assert.ok(recebidos.some((m) => m.t === 'chats'))
-  assert.ok(!recebidos.some((m) => m.t === 'rm-rf'))
-  wpc.close()
-  wcel.close()
+test('web sem sessão ou para máquina offline é recusado; máquina que cai avisa a web', async () => {
+  await assert.rejects(() => abrir('/ws/web?m=pc-da-ana'))
+  const { cookie } = await entrar()
+  const off = await abrir('/ws/web?m=nao-existe', { headers: { Cookie: cookie } })
+  assert.equal((await proxima(off, (x) => x.t === 'estado')).online, false)
+  const m = await maquina()
+  const w = await abrir('/ws/web?m=pc-da-ana', { headers: { Cookie: cookie } })
+  await proxima(w, (x) => x.t === 'estado')
+  const caiu = proxima(w, (x) => x.t === 'estado' && x.online === false)
+  m.close()
+  await caiu
+  w.close()
 })
 
-test('auditoria registra vínculo, envio e revogação', async () => {
-  const pc = await registrar()
-  const v = await vincular(pc)
-  await enviarArquivo(v.cookie, 'audit.txt', 'x')
-  const lista = (await (await fetch(`${base}/api/celulares`, { headers: { Authorization: 'Bearer ' + pc.auth } })).json()).lista
-  await post('/api/celulares/' + lista[0].id, pc.auth, 'DELETE')
-  const ev = (await (await fetch(`${base}/api/eventos`, { headers: { Authorization: 'Bearer ' + pc.auth } })).json()).lista.map((e) => e.tipo)
-  for (const t of ['celular-vinculado', 'arquivo-enviado', 'celular-revogado']) assert.ok(ev.includes(t), t)
-})
-
-test('limpeza apaga arquivos vencidos do disco e do banco', async () => {
-  const pc = await registrar()
-  const v = await vincular(pc)
-  const a = await (await enviarArquivo(v.cookie, 'velho.txt', 'x')).json()
-  db.raw.prepare('UPDATE arquivos SET criado = ? WHERE id = ?').run(Date.now() - 48 * 3600 * 1000, a.id)
-  limpar()
-  await new Promise((r) => setTimeout(r, 100))
-  assert.equal(db.arquivo(a.id), undefined)
-  assert.equal(fs.existsSync(path.join(process.env.DATA_DIR, 'arquivos', a.id)), false)
-})
-
-test('código de vínculo sobrevive a reinício (fica no banco)', async () => {
-  const pc = await registrar()
-  const v = await (await post('/api/vinculo', pc.auth)).json()
-  assert.ok(db.raw.prepare('SELECT 1 AS x FROM codigos WHERE codigo = ?').get(v.codigo))
-})
-
-test('placa: computador recebe código curto e o celular vincula digitando (cookie de 10 anos)', async () => {
-  const r = await (await post('/api/registrar')).json()
-  assert.match(r.placa, /^[A-Z2-9]{4}-[A-Z2-9]{4}$/)
-  const auth = `${r.computadorId}.${r.chave}`
-  assert.strictEqual((await (await post('/api/placa', auth, 'GET')).json()).placa, r.placa)
-  const pr = await fetch(base + '/api/parear', { method: 'POST', headers: { 'content-type': 'application/json', 'user-agent': 'Mozilla/5.0 (Android) Chrome/120' }, body: JSON.stringify({ placa: r.placa.toLowerCase().replace('-', ' ') }) })
-  assert.strictEqual(pr.status, 200)
-  const ck = pr.headers.get('set-cookie')
-  assert.match(ck, /Max-Age=315360000/)
-  assert.match(ck, /HttpOnly/)
-  const eu = await fetch(base + '/api/eu', { headers: { cookie: ck.split(';')[0] } })
-  assert.strictEqual(eu.status, 200)
-})
-
-test('placa: código errado é recusado e trocar a placa invalida a antiga', async () => {
-  const r = await (await post('/api/registrar')).json()
-  const auth = `${r.computadorId}.${r.chave}`
-  const tenta = (placa) => fetch(base + '/api/parear', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ placa }) })
-  assert.strictEqual((await tenta('AAAA-AAAA')).status, 404)
-  assert.strictEqual((await tenta('')).status, 404)
-  const nova = (await (await post('/api/placa/nova', auth)).json()).placa
-  assert.notStrictEqual(nova, r.placa)
-  assert.strictEqual((await tenta(r.placa)).status, 404)
-  assert.strictEqual((await tenta(nova)).status, 200)
+test('a página de entrada é servida', async () => {
+  const r = await get('/')
+  assert.equal(r.status, 200)
+  assert.match(await r.text(), /Segundo Cérebro/)
+  assert.equal((await get('/health')).status, 200)
 })
