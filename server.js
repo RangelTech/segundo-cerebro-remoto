@@ -25,12 +25,24 @@ const COMANDOS_CELULAR = new Set(['chats', 'abrir', 'novo', 'enviar', 'parar', '
 
 const hash = (s) => crypto.createHash('sha256').update(String(s)).digest('hex')
 const aleatorio = (n = 32) => crypto.randomBytes(n).toString('base64url')
+// placa do computador: 8 caracteres sem ambiguidade (sem 0/O, 1/I/L), mostrada como XXXX-XXXX
+const ALFABETO_PLACA = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
+function placaNova() {
+  for (;;) {
+    let p = ''
+    for (const b of crypto.randomBytes(8)) p += ALFABETO_PLACA[b % ALFABETO_PLACA.length]
+    if (!db.computadorPorPlaca(p)) return p
+  }
+}
+const normalizarPlaca = (t) => String(t || '').toUpperCase().replace(/[^A-Z0-9]/g, '')
+const formatarPlaca = (p) => p.slice(0, 4) + '-' + p.slice(4)
 const igual = (a, b) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b))
 
 fs.mkdirSync(path.join(DADOS, 'arquivos'), { recursive: true })
 const db = banco.abrir(DADOS)
 const migrados = db.migrarJson(path.join(DADOS, 'vinculos.json'))
 if (migrados) console.log(`vínculos importados do formato antigo: ${migrados} computador(es)`)
+for (const id of db.semPlaca()) db.placaDefinir(id, placaNova())
 const arqPath = (id) => path.join(DADOS, 'arquivos', id)
 const apagarArquivo = (id) => fs.rm(arqPath(id), { force: true }, () => {})
 
@@ -122,6 +134,27 @@ function receberArquivo(req, res, destino, aoTerminar) {
   saida.on('error', () => !res.headersSent && json(res, 500, { erro: 'Não consegui gravar o arquivo.' }))
 }
 
+function lerJson(req, max = 4096) {
+  return new Promise((resolve) => {
+    let t = ''
+    req.on('data', (d) => {
+      t += d
+      if (t.length > max) {
+        req.destroy()
+        resolve(null)
+      }
+    })
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(t))
+      } catch {
+        resolve(null)
+      }
+    })
+    req.on('error', () => resolve(null))
+  })
+}
+
 const servidor = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x')
   const ip = ipDe(req)
@@ -132,9 +165,10 @@ const servidor = http.createServer(async (req, res) => {
       if (!limite(ip, 'reg', 10 * LIM, 3600000)) return json(res, 429, { erro: 'Muitas tentativas.' })
       const id = aleatorio(9)
       const chave = aleatorio(32)
-      db.computadorNovo(id, hash(chave))
+      const placa = placaNova()
+      db.computadorNovo(id, hash(chave), placa)
       db.evento(id, null, 'computador-registrado', ip)
-      return json(res, 200, { computadorId: id, chave })
+      return json(res, 200, { computadorId: id, chave, placa: formatarPlaca(placa) })
     }
 
     if (req.method === 'POST' && url.pathname === '/api/vinculo') {
@@ -143,7 +177,37 @@ const servidor = http.createServer(async (req, res) => {
       if (!limite(ip, 'vin', 30 * LIM, 600000)) return json(res, 429, { erro: 'Muitas tentativas.' })
       const codigo = aleatorio(18)
       db.codigoNovo(codigo, id, Date.now() + VALIDADE_CODIGO_MS)
-      return json(res, 200, { codigo, expiraEm: VALIDADE_CODIGO_MS })
+      return json(res, 200, { codigo, expiraEm: VALIDADE_CODIGO_MS, placa: formatarPlaca(db.computador(id).placa) })
+    }
+
+    // a placa é o ID curto do computador, usado para vincular o celular digitando em vez de ler o QR
+    if (req.method === 'GET' && url.pathname === '/api/placa') {
+      const id = computadorDe(req)
+      if (!id) return json(res, 401, { erro: 'Computador não reconhecido.' })
+      return json(res, 200, { placa: formatarPlaca(db.computador(id).placa) })
+    }
+    if (req.method === 'POST' && url.pathname === '/api/placa/nova') {
+      const id = computadorDe(req)
+      if (!id) return json(res, 401, { erro: 'Computador não reconhecido.' })
+      db.placaDefinir(id, placaNova())
+      db.evento(id, null, 'placa-trocada', ip)
+      return json(res, 200, { placa: formatarPlaca(db.computador(id).placa) })
+    }
+
+    // celular digita a placa: mesma sessão de 10 anos do QR. Limites estritos por IP e globais contra tentativa em massa.
+    if (req.method === 'POST' && url.pathname === '/api/parear') {
+      if (!limite(ip, 'par', 8 * LIM, 600000) || !limite('global', 'par', 300 * LIM, 3600000)) return json(res, 429, { erro: 'Muitas tentativas. Aguarde alguns minutos.' })
+      const corpo = await lerJson(req)
+      const placa = normalizarPlaca(corpo?.placa)
+      const pc = placa.length === 8 ? db.computadorPorPlaca(placa) : null
+      if (!pc) return json(res, 404, { erro: 'Código não encontrado. Confira as letras e números mostrados no computador.' })
+      const celularId = aleatorio(9)
+      const token = aleatorio(32)
+      const nome = nomeDoAparelho(req.headers['user-agent'])
+      db.celularNovo(celularId, pc.id, hash(token), nome)
+      db.evento(pc.id, celularId, 'celular-vinculado', nome + ' (código)')
+      avisarComputador(pc.id)
+      return json(res, 200, { ok: true }, { 'Set-Cookie': `${COOKIE}=${celularId}.${token}; Path=/; Max-Age=${DEZ_ANOS}; HttpOnly; Secure; SameSite=Strict` })
     }
 
     if (req.method === 'GET' && url.pathname === '/api/celulares') {

@@ -27,7 +27,9 @@
   <input type="file" id="arquivo" multiple hidden>
 </main>
 <main id="vazio" class="tela centro" hidden>
-  <div><img src="/icone-192.png" class="grande" alt=""><h2>Celular não vinculado</h2><p>No Segundo Cérebro do computador, abra <b>Configurações › Celular</b> e leia o QR code com a câmera.</p></div>
+  <div><img src="/icone-192.png" class="grande" alt=""><h2>Celular não vinculado</h2><p>No Segundo Cérebro do computador, abra <b>Configurações › Celular</b>. Leia o QR code com a câmera ou digite aqui o código mostrado lá.</p>
+  <form id="placa-form" class="placa-form" autocomplete="off"><input id="placa" maxlength="9" inputmode="text" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX" aria-label="Código do computador"><button type="submit">Vincular</button></form>
+  <div id="placa-erro" class="placa-erro" hidden></div></div>
 </main>
 <div id="toast" class="toast" hidden></div>
 <script src="/app.js"></script>

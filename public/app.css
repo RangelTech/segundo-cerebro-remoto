@@ -63,3 +63,8 @@ button,textarea{font:inherit;color:inherit}
 .item .vivo{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ac);margin-right:6px;animation:p 1.1s infinite}
 .atencao{color:var(--ac2);font-weight:600}
 .toast{position:fixed;left:16px;right:16px;bottom:calc(90px + env(safe-area-inset-bottom));z-index:20;background:#3a1f1f;border:1px solid var(--err);color:#ffd7d7;border-radius:12px;padding:10px 14px;text-align:center;font-size:14px}
+
+.placa-form{display:flex;gap:8px;justify-content:center;margin:18px auto 0;max-width:320px}
+.placa-form input{flex:1;min-width:0;text-align:center;font:600 22px ui-monospace,Menlo,Consolas,monospace;letter-spacing:.12em;padding:10px;border-radius:12px;border:1px solid var(--mut);background:transparent;color:inherit}
+.placa-form button{padding:0 16px;border-radius:12px;border:0;background:#c96442;color:#fff;font-weight:600}
+.placa-erro{color:#ff8a7a;margin-top:10px;font-size:14px}

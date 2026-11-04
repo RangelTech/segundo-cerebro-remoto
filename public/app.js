@@ -304,6 +304,31 @@
     desenharMsgs()
   }
 
+  // ---------- vínculo digitando o código do computador ----------
+  const placaIn = $('placa')
+  placaIn.addEventListener('input', () => {
+    const v = placaIn.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8)
+    placaIn.value = v.length > 4 ? v.slice(0, 4) + '-' + v.slice(4) : v
+  })
+  $('placa-form').addEventListener('submit', async (e) => {
+    e.preventDefault()
+    const erro = $('placa-erro')
+    erro.hidden = true
+    try {
+      const r = await fetch('/api/parear', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ placa: placaIn.value }) })
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok) {
+        erro.textContent = j.erro || 'Não consegui vincular.'
+        erro.hidden = false
+        return
+      }
+      location.href = '/app'
+    } catch {
+      erro.textContent = 'Sem conexão. Tente de novo.'
+      erro.hidden = false
+    }
+  })
+
   // ---------- início ----------
   fetch('/api/eu', { cache: 'no-store' }).then(async (r) => {
     if (!r.ok) return mostrar('vazio')

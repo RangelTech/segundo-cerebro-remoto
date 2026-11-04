@@ -4,7 +4,7 @@ const { DatabaseSync } = require('node:sqlite')
 const fs = require('fs')
 const path = require('path')
 
-const VERSAO = 2
+const VERSAO = 3
 
 function abrir(dir) {
   fs.mkdirSync(dir, { recursive: true })
@@ -33,10 +33,16 @@ function abrir(dir) {
     );
     CREATE INDEX IF NOT EXISTS ix_eventos_pc ON eventos(computador_id, id DESC);
   `)
+  // v3: placa = código curto e permanente do computador (para vincular o celular digitando)
+  if (!db.prepare("PRAGMA table_info(computadores)").all().some((c) => c.name === 'placa')) db.exec('ALTER TABLE computadores ADD COLUMN placa TEXT')
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS ux_computadores_placa ON computadores(placa)')
   db.prepare('INSERT OR REPLACE INTO meta(chave, valor) VALUES (?, ?)').run('versao', String(VERSAO))
 
   const q = {
-    computadorNovo: db.prepare('INSERT INTO computadores(id, hash, criado) VALUES (?, ?, ?)'),
+    computadorNovo: db.prepare('INSERT INTO computadores(id, hash, criado, placa) VALUES (?, ?, ?, ?)'),
+    computadorPorPlaca: db.prepare('SELECT * FROM computadores WHERE placa = ?'),
+    placaDefinir: db.prepare('UPDATE computadores SET placa = ? WHERE id = ?'),
+    semPlaca: db.prepare('SELECT id FROM computadores WHERE placa IS NULL'),
     computador: db.prepare('SELECT * FROM computadores WHERE id = ?'),
     computadorVisto: db.prepare('UPDATE computadores SET visto = ? WHERE id = ?'),
     celularNovo: db.prepare('INSERT INTO celulares(id, computador_id, hash, nome, criado) VALUES (?, ?, ?, ?, ?)'),
@@ -61,7 +67,10 @@ function abrir(dir) {
 
   return {
     raw: db,
-    computadorNovo: (id, hash) => q.computadorNovo.run(id, hash, Date.now()),
+    computadorNovo: (id, hash, placa = null) => q.computadorNovo.run(id, hash, Date.now(), placa),
+    computadorPorPlaca: (placa) => q.computadorPorPlaca.get(placa),
+    placaDefinir: (id, placa) => q.placaDefinir.run(placa, id),
+    semPlaca: () => q.semPlaca.all().map((r) => r.id),
     computador: (id) => q.computador.get(id),
     computadorVisto: (id) => q.computadorVisto.run(Date.now(), id),
     celularNovo: (id, computadorId, hash, nome) => q.celularNovo.run(id, computadorId, hash, nome, Date.now()),
@@ -105,7 +114,7 @@ function abrir(dir) {
         return 0
       }
       let n = 0
-      for (const [id, c] of Object.entries(antigo.computadores || {})) (q.computadorNovo.run(id, c.hash, c.criado || Date.now()), n++)
+      for (const [id, c] of Object.entries(antigo.computadores || {})) (q.computadorNovo.run(id, c.hash, c.criado || Date.now(), null), n++)
       for (const [id, c] of Object.entries(antigo.celulares || {})) if (antigo.computadores?.[c.computadorId]) q.celularNovo.run(id, c.computadorId, c.hash, c.nome || 'Celular', c.criado || Date.now())
       fs.renameSync(arq, arq + '.migrado')
       return n

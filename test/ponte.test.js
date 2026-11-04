@@ -210,3 +210,29 @@ test('código de vínculo sobrevive a reinício (fica no banco)', async () => {
   const v = await (await post('/api/vinculo', pc.auth)).json()
   assert.ok(db.raw.prepare('SELECT 1 AS x FROM codigos WHERE codigo = ?').get(v.codigo))
 })
+
+test('placa: computador recebe código curto e o celular vincula digitando (cookie de 10 anos)', async () => {
+  const r = await (await post('/api/registrar')).json()
+  assert.match(r.placa, /^[A-Z2-9]{4}-[A-Z2-9]{4}$/)
+  const auth = `${r.computadorId}.${r.chave}`
+  assert.strictEqual((await (await post('/api/placa', auth, 'GET')).json()).placa, r.placa)
+  const pr = await fetch(base + '/api/parear', { method: 'POST', headers: { 'content-type': 'application/json', 'user-agent': 'Mozilla/5.0 (Android) Chrome/120' }, body: JSON.stringify({ placa: r.placa.toLowerCase().replace('-', ' ') }) })
+  assert.strictEqual(pr.status, 200)
+  const ck = pr.headers.get('set-cookie')
+  assert.match(ck, /Max-Age=315360000/)
+  assert.match(ck, /HttpOnly/)
+  const eu = await fetch(base + '/api/eu', { headers: { cookie: ck.split(';')[0] } })
+  assert.strictEqual(eu.status, 200)
+})
+
+test('placa: código errado é recusado e trocar a placa invalida a antiga', async () => {
+  const r = await (await post('/api/registrar')).json()
+  const auth = `${r.computadorId}.${r.chave}`
+  const tenta = (placa) => fetch(base + '/api/parear', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ placa }) })
+  assert.strictEqual((await tenta('AAAA-AAAA')).status, 404)
+  assert.strictEqual((await tenta('')).status, 404)
+  const nova = (await (await post('/api/placa/nova', auth)).json()).placa
+  assert.notStrictEqual(nova, r.placa)
+  assert.strictEqual((await tenta(r.placa)).status, 404)
+  assert.strictEqual((await tenta(nova)).status, 200)
+})
