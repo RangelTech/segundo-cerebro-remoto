@@ -1,6 +1,6 @@
 {
   "name": "segundo-cerebro-remoto",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "Ponte do controle remoto do Segundo Cérebro (acesso web por login)",
   "main": "server.js",

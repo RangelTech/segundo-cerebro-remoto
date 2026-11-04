@@ -43,7 +43,7 @@
     api('GET', '/api/eu').then(function (r) {
       if (r.status !== 200) return tela('login')
       $('quem').textContent = r.json.nome || r.json.email
-      mostrarMaquinas(true)
+      mostrarMaquinas(!/[?&]lista=1/.test(location.search))
     })
   }
 

@@ -187,7 +187,7 @@ const servidor = http.createServer(async (req, res) => {
       if (!m) return json(res, 404, { erro: 'Este computador não está conectado agora.' })
       const caminho = mm[2] === '/' ? 'web.html' : decodeURIComponent(mm[2].slice(1))
       // os arquivos de uma versão do app não mudam: a ponte guarda o que o app já mandou e serve da memória (e o navegador revalida por ETag)
-      const chave = m.info.versao + '|' + caminho
+      const chave = m.info.id + '|' + m.info.desde + '|' + caminho
       let r = estaticos.get(chave)
       if (!r) {
         const novo = await pedirAoApp(m, caminho)
