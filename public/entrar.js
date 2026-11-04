@@ -14,16 +14,26 @@
       var lista = r.json.lista || []
       // uma máquina só (caso da VM dedicada): entra direto
       if (auto && lista.length === 1) { location.replace('/m/' + encodeURIComponent(lista[0].id) + '/'); return }
-      var ul = $('lista'); ul.textContent = ''
-      lista.forEach(function (m) {
-        var li = document.createElement('li'), a = document.createElement('a')
-        a.href = '/m/' + encodeURIComponent(m.id) + '/'
-        var ponto = document.createElement('span'); ponto.className = 'ponto'
-        var box = document.createElement('span')
-        var nome = document.createElement('span'); nome.className = 'nome'; nome.textContent = m.nome
-        var det = document.createElement('span'); det.className = 'det'; det.textContent = (m.tipo === 'vm' ? 'Máquina virtual' : 'Computador') + (m.versao ? ' · versão ' + m.versao : '')
-        box.appendChild(nome); box.appendChild(det); a.appendChild(ponto); a.appendChild(box); li.appendChild(a); ul.appendChild(li)
+      var grupos = $('grupos'); grupos.textContent = ''
+      var secoes = [['desktop', 'Meus computadores'], ['vm', 'Minha máquina virtual']]
+      secoes.forEach(function (s) {
+        var itens = lista.filter(function (m) { return m.tipo === s[0] })
+        if (!itens.length) return
+        var tit = document.createElement('h2'); tit.textContent = s[1]; grupos.appendChild(tit)
+        var ul = document.createElement('ul')
+        itens.forEach(function (m) {
+          var li = document.createElement('li'), a = document.createElement('a')
+          a.href = '/m/' + encodeURIComponent(m.id) + '/'
+          var ponto = document.createElement('span'); ponto.className = 'ponto'
+          var box = document.createElement('span')
+          var nome = document.createElement('span'); nome.className = 'nome'; nome.textContent = m.nome
+          var det = document.createElement('span'); det.className = 'det'; det.textContent = (m.versao ? 'Versão ' + m.versao + ' · ' : '') + 'conectado'
+          box.appendChild(nome); box.appendChild(det); a.appendChild(ponto); a.appendChild(box); li.appendChild(a); ul.appendChild(li)
+        })
+        grupos.appendChild(ul)
       })
+      // quem já tem uma máquina virtual não precisa do convite
+      $('contratar').hidden = lista.some(function (m) { return m.tipo === 'vm' })
       $('vazio').hidden = lista.length > 0
       tela('escolha')
     })

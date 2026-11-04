@@ -25,3 +25,7 @@ li .ponto{width:10px;height:10px;border-radius:50%;background:#58c27d;flex:none}
 .acoes{display:flex;gap:10px}
 .acoes button{flex:1}
 [hidden]{display:none!important}
+h2{font-size:.8rem;letter-spacing:.06em;text-transform:uppercase;color:var(--suave);margin:18px 0 8px;font-weight:600}
+.contratar{display:grid;gap:2px;text-decoration:none;color:var(--texto);background:linear-gradient(135deg,#2a1f14,#1f1a15);border:1px solid var(--borda);border-radius:14px;padding:14px 16px;margin:6px 0 16px}
+.contratar:hover,.contratar:focus-visible{border-color:var(--cor);outline:none}
+.contratar span{color:var(--suave);font-size:.88rem}
