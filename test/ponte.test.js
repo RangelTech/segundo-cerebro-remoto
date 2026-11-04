@@ -167,3 +167,22 @@ test('a página de entrada é servida', async () => {
   assert.match(await r.text(), /Segundo Cérebro/)
   assert.equal((await get('/health')).status, 200)
 })
+
+test('arquivos da interface vêm do cache da ponte e o navegador revalida por ETag', async () => {
+  require('../server').estaticos.clear()
+  const m = await maquina()
+  let pedidos = 0
+  m.on('message', (d) => { if (JSON.parse(String(d)).t === 'http') pedidos++ })
+  const { cookie } = await entrar()
+  const a = await get('/m/pc-da-ana/app.js', cookie)
+  assert.equal(a.status, 404) // 404 não entra no cache
+  const p1 = await get('/m/pc-da-ana/', cookie)
+  const etag = p1.headers.get('etag')
+  assert.ok(etag)
+  const p2 = await get('/m/pc-da-ana/', cookie)
+  assert.equal(await p2.text(), '<h1>interface web.html</h1>')
+  const p3 = await fetch(urlPonte + '/m/pc-da-ana/', { headers: { Cookie: cookie, 'If-None-Match': etag } })
+  assert.equal(p3.status, 304)
+  assert.equal(pedidos, 2) // 1 do app.js (404) + 1 da página; as outras vieram do cache
+  m.close()
+})

@@ -121,6 +121,18 @@ function lerJson(req, max = 4096) {
     req.on('error', () => resolve(null))
   })
 }
+// cache dos arquivos da interface por versão do app (teto de memória; ao estourar, recomeça)
+const estaticos = new Map()
+let bytesEstaticos = 0
+const TETO_ESTATICOS = (+process.env.CACHE_MB || 64) * 1024 * 1024
+function guardarEstatico(chave, r) {
+  if (bytesEstaticos + r.corpo.length > TETO_ESTATICOS) {
+    estaticos.clear()
+    bytesEstaticos = 0
+  }
+  estaticos.set(chave, r)
+  bytesEstaticos += r.corpo.length
+}
 const pedirAoApp = (m, caminho) =>
   new Promise((resolve) => {
     const rid = aleatorio(8)
@@ -174,10 +186,22 @@ const servidor = http.createServer(async (req, res) => {
       const m = daConta(s.conta).get(mm[1])
       if (!m) return json(res, 404, { erro: 'Este computador não está conectado agora.' })
       const caminho = mm[2] === '/' ? 'web.html' : decodeURIComponent(mm[2].slice(1))
-      const r = await pedirAoApp(m, caminho)
-      if (!r) return json(res, 504, { erro: 'O computador não respondeu.' })
-      res.writeHead(r.status || 200, { 'Content-Type': r.tipo || 'application/octet-stream', 'Cache-Control': 'no-cache', 'Content-Security-Policy': CSP_APP, ...CABECALHOS })
-      return res.end(Buffer.from(r.b64 || '', 'base64'))
+      // os arquivos de uma versão do app não mudam: a ponte guarda o que o app já mandou e serve da memória (e o navegador revalida por ETag)
+      const chave = m.info.versao + '|' + caminho
+      let r = estaticos.get(chave)
+      if (!r) {
+        const novo = await pedirAoApp(m, caminho)
+        if (!novo) return json(res, 504, { erro: 'O computador não respondeu.' })
+        r = { status: novo.status || 200, tipo: novo.tipo || 'application/octet-stream', corpo: Buffer.from(novo.b64 || '', 'base64') }
+        r.etag = '"' + crypto.createHash('sha1').update(r.corpo).digest('hex') + '"'
+        if (r.status === 200) guardarEstatico(chave, r)
+      }
+      if (r.status === 200 && req.headers['if-none-match'] === r.etag) {
+        res.writeHead(304, { ETag: r.etag, 'Cache-Control': 'no-cache', ...CABECALHOS })
+        return res.end()
+      }
+      res.writeHead(r.status, { 'Content-Type': r.tipo, 'Cache-Control': 'no-cache', ETag: r.etag, 'Content-Security-Policy': CSP_APP, ...CABECALHOS })
+      return res.end(r.corpo)
     }
 
     // página de login e escolha da máquina
@@ -296,4 +320,4 @@ function ligarWeb(ws, sessao, maquinaId, m) {
 }
 
 if (require.main === module) servidor.listen(PORTA, () => console.log('ponte remota (acesso web) na porta', PORTA))
-module.exports = { servidor, maquinas }
+module.exports = { servidor, maquinas, estaticos }
