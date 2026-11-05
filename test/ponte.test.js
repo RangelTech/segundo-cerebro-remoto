@@ -156,9 +156,11 @@ test('web sem sessão ou para máquina offline é recusado; máquina que cai avi
   const w = await abrir('/ws/web?m=pc-da-ana', { headers: { Cookie: cookie } })
   await proxima(w, (x) => x.t === 'estado')
   const caiu = proxima(w, (x) => x.t === 'estado' && x.online === false)
+  const fechou = new Promise((ok) => w.once('close', (codigo) => ok(codigo)))
   m.close()
   await caiu
-  w.close()
+  // o navegador é desconectado junto: assim ele reconecta e liga na máquina nova quando ela volta
+  assert.equal(await fechou, 4004)
 })
 
 test('a página de entrada é servida', async () => {

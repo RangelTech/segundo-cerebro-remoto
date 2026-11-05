@@ -292,7 +292,15 @@ function ligarMaquina(ws, conta, chave) {
     if (!m) return
     if (maquinas.get(conta)?.get(m.info.id) === m) maquinas.get(conta).delete(m.info.id)
     if (!maquinas.get(conta)?.size) maquinas.delete(conta)
-    for (const w of m.webs.values()) enviar(w, { t: 'estado', online: false })
+    // avisa e FECHA os sockets dos navegadores: eles estavam presos a esta máquina. Fechados, o navegador reconecta sozinho
+    // e, quando a máquina volta, liga na nova conexão (sem isto ficava falando com um socket morto até o usuário recarregar).
+    for (const w of m.webs.values()) {
+      enviar(w, { t: 'estado', online: false })
+      try {
+        w.close(4004, 'computador reiniciou')
+      } catch {}
+    }
+    m.webs.clear()
   })
 }
 
