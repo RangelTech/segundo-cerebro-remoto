@@ -160,6 +160,19 @@ const servidor = http.createServer(async (req, res) => {
       if (r.status !== 200) return json(res, r.status === 429 ? 429 : r.status >= 500 ? 503 : r.status, { erro: r.json?.error?.message || 'Não foi possível entrar.' })
       return json(res, 200, { ok: true, email: r.json.email, nome: r.json.name }, { 'Set-Cookie': cookieSessao(criarSessao(r.json), SESSAO_MS / 1000) })
     }
+    // "Esqueci a senha": o llm-access manda o link por e-mail e sempre responde igual (não revela se o e-mail existe)
+    if (req.method === 'POST' && url.pathname === '/api/esqueci') {
+      if (!limite(ip, 'esqueci', 5 * LIM, 3600000)) return json(res, 429, { erro: 'Muitas tentativas. Tente de novo mais tarde.' })
+      const b = await lerJson(req)
+      const email = String(b?.email || '').trim().slice(0, 200)
+      if (!email.includes('@')) return json(res, 400, { erro: 'Digite o seu e-mail.' })
+      try {
+        await acessoPost('/v1/auth/forgot', { email })
+      } catch {
+        return json(res, 503, { erro: 'Não consegui falar com o servidor agora. Tente de novo em instantes.' })
+      }
+      return json(res, 200, { ok: true })
+    }
     if (req.method === 'POST' && url.pathname === '/api/sair') return json(res, 200, { ok: true }, { 'Set-Cookie': cookieSessao('', 0) })
 
     if (req.method === 'GET' && url.pathname === '/api/eu') {

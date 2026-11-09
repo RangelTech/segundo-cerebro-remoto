@@ -29,3 +29,5 @@ h2{font-size:.8rem;letter-spacing:.06em;text-transform:uppercase;color:var(--sua
 .contratar{display:grid;gap:2px;text-decoration:none;color:var(--texto);background:linear-gradient(135deg,#2a1f14,#1f1a15);border:1px solid var(--borda);border-radius:14px;padding:14px 16px;margin:6px 0 16px}
 .contratar:hover,.contratar:focus-visible{border-color:var(--cor);outline:none}
 .contratar span{color:var(--suave);font-size:.88rem}
+button.link{background:transparent;border:0;color:var(--texto);opacity:.75;text-decoration:underline;font-size:.9rem;padding:8px 0;cursor:pointer}
+.aviso{color:var(--texto);opacity:.85;margin:0;font-size:.9rem}

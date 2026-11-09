@@ -47,6 +47,19 @@
     })
   }
 
+  // Esqueci a senha: pede o link ao servidor (que manda por e-mail e responde igual exista ou não a conta)
+  $('esqueci').addEventListener('click', function () {
+    var msg = $('esqueci-msg'); msg.hidden = true; erro('')
+    var email = $('email').value.trim()
+    if (!email) return erro('Digite o seu e-mail acima e toque de novo em "Esqueci a senha".')
+    var b = $('esqueci'); b.disabled = true
+    api('POST', '/api/esqueci', { email: email }).then(function (r) {
+      b.disabled = false
+      if (r.status !== 200) return erro(r.json.erro || 'Não foi possível enviar agora.')
+      msg.textContent = 'Se existir uma conta com esse e-mail, enviamos o link para criar uma nova senha. Olhe também a caixa de spam.'; msg.hidden = false
+    }).catch(function () { b.disabled = false; erro('Sem conexão. Tente de novo.') })
+  })
+
   $('form').addEventListener('submit', function (e) {
     e.preventDefault()
     erro('')

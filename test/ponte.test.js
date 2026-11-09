@@ -7,6 +7,7 @@ const http = require('http')
 const WebSocket = require('ws')
 
 let acesso, ponte, urlPonte, portaPonte
+const esqueceu = [] // e-mails que chegaram em /v1/auth/forgot do llm-access de mentira
 const SENHA = 'senha-forte-123'
 const CHAVE = 'sk-chave-da-maquina-0001'
 
@@ -23,6 +24,7 @@ test.before(async () => {
         if (b.email === 'inativa@x.com') return out(403, { error: { message: 'sua assinatura nao esta ativa' } })
         return out(401, { error: { message: 'e-mail ou senha incorretos' } })
       }
+      if (req.url === '/v1/auth/forgot') return (esqueceu.push(JSON.parse(t || '{}').email), out(200, { ok: true }))
       if (req.url === '/v1/auth/whoami') {
         const k = req.headers.authorization
         if (k === 'Bearer ' + CHAVE) return out(200, { account_id: 7, email: 'ana@x.com', name: 'Ana' })
@@ -187,4 +189,18 @@ test('arquivos da interface vêm do cache da ponte e o navegador revalida por ET
   assert.equal(p3.status, 304)
   assert.equal(pedidos, 2) // 1 do app.js (404) + 1 da página; as outras vieram do cache
   m.close()
+})
+
+test('Esqueci a senha: pede o link ao servidor, responde igual e valida o e-mail', async () => {
+  const post = (corpo) => fetch(urlPonte + '/api/esqueci', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corpo) })
+  esqueceu.length = 0
+  const ok = await post({ email: 'ana@x.com' })
+  assert.equal(ok.status, 200)
+  assert.deepEqual(await ok.json(), { ok: true })
+  assert.deepEqual(esqueceu, ['ana@x.com'])
+  const quemNao = await post({ email: 'ninguem@x.com' })
+  assert.equal(quemNao.status, 200) // não revela se a conta existe
+  assert.equal((await post({ email: 'sem-arroba' })).status, 400)
+  assert.equal((await post({})).status, 400)
+  assert.equal(esqueceu.length, 2)
 })
