@@ -272,6 +272,8 @@ servidor.on('upgrade', async (req, socket, head) => {
 
 function ligarMaquina(ws, conta, chave) {
   batida(ws)
+  // mensagem acima do teto (ex.: anexo enorme) gera 'error' no socket; sem este ouvinte o processo da PONTE caía e derrubava todo mundo
+  ws.on('error', () => {})
   let m = null
   const aposta = setTimeout(() => !m && ws.close(4000, 'sem identificação'), 10000)
   const reconferir = setInterval(async () => {
@@ -319,6 +321,7 @@ function ligarMaquina(ws, conta, chave) {
 
 function ligarWeb(ws, sessao, maquinaId, m) {
   batida(ws)
+  ws.on('error', () => {}) // ver ligarMaquina: o erro fecha só esta conexão
   if (!m) {
     enviar(ws, { t: 'estado', online: false })
     return ws.close(4003, 'computador offline')

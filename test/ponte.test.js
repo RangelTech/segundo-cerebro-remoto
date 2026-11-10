@@ -149,6 +149,22 @@ test('web <-> app: chamada, resposta e evento chegam só para quem pediu', async
   w1.close(); w2.close(); m.close()
 })
 
+test('mensagem acima do teto (anexo enorme) fecha só aquela conexão; a ponte continua no ar', async () => {
+  const m = await maquina()
+  const { cookie } = await entrar()
+  const w = await abrir('/ws/web?m=pc-da-ana', { headers: { Cookie: cookie } })
+  await proxima(w, (x) => x.t === 'estado')
+  const fechou = new Promise((r) => w.on('close', (c) => r(c)))
+  w.on('error', () => {})
+  w.send(Buffer.alloc(41 * 1024 * 1024, 97)) // 41 MB: acima do MAX_MSG padrão (40 MB)
+  assert.equal(await fechou, 1009, 'fechou por tamanho')
+  const r = await get('/')
+  assert.equal(r.status, 200, 'a ponte segue respondendo')
+  const w2 = await abrir('/ws/web?m=pc-da-ana', { headers: { Cookie: cookie } })
+  assert.equal((await proxima(w2, (x) => x.t === 'estado')).online, true, 'outra pessoa continua conectando')
+  w2.close(); m.close()
+})
+
 test('web sem sessão ou para máquina offline é recusado; máquina que cai avisa a web', async () => {
   await assert.rejects(() => abrir('/ws/web?m=pc-da-ana'))
   const { cookie } = await entrar()
