@@ -15,6 +15,7 @@
 
   <section id="login" hidden>
     <p class="sub">Entre com a sua conta para controlar o seu Segundo Cérebro de qualquer lugar.</p>
+    <p class="aviso" id="aviso-ext" hidden>Entre aqui uma vez: a extensão do Chrome fica conectada sozinha, sem senha nela.</p>
     <form id="form" autocomplete="on">
       <label>E-mail<input id="email" type="email" name="email" autocomplete="username" required autofocus></label>
       <label>Senha<input id="senha" type="password" name="password" autocomplete="current-password" required></label>
@@ -30,6 +31,12 @@
     <div id="grupos"></div>
     <p id="vazio" class="vazio" hidden>Nenhum computador conectado agora. No Segundo Cérebro instalado, abra Configurações e ligue <b>Permitir acesso pela web</b>. Se for uma máquina virtual, confira se ela está ligada.</p>
     <a id="contratar" class="contratar" href="https://brain.rangeltech.net/#maquina-virtual" target="_blank" rel="noopener"><b>Quer uma máquina virtual só sua?</b><span>Seu Segundo Cérebro rodando 24 horas, sem instalar nada. Saiba mais</span></a>
+    <section id="ext" class="contratar" style="display:block" hidden>
+      <b>Deixe a IA usar o seu Chrome</b>
+      <span id="ext-txt"></span>
+      <ul id="ext-lista"></ul>
+      <a id="ext-baixar" href="https://brain.rangeltech.net/extensao/" target="_blank" rel="noopener">Baixar a extensão do Chrome</a>
+    </section>
     <div class="acoes"><button id="atualizar" class="sec" type="button">Atualizar</button><button id="sair" class="sec" type="button">Sair</button></div>
   </section>
 </main>

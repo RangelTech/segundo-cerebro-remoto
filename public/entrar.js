@@ -36,10 +36,31 @@
       $('contratar').hidden = lista.some(function (m) { return m.tipo === 'vm' })
       $('vazio').hidden = lista.length > 0
       tela('escolha')
+      mostrarExtensao()
+    })
+  }
+
+  // extensão do Chrome: estado e desconectar (o pareamento é feito sozinho pelo content script da extensão quando a pessoa está logada aqui)
+  function mostrarExtensao() {
+    api('GET', '/api/extensao/dispositivos').then(function (r) {
+      if (r.status !== 200) return
+      var lista = r.json.lista || []
+      var ul = $('ext-lista'); ul.textContent = ''
+      $('ext').hidden = false
+      $('ext-txt').textContent = lista.length ? 'O Segundo Cérebro pode abrir e usar o Chrome abaixo, com as suas contas já abertas.' : 'Instale a extensão uma vez e o Segundo Cérebro passa a usar o seu Chrome, com as suas contas (WhatsApp, Instagram e outras) já abertas. Depois de instalar, volte aqui: ela se conecta sozinha.'
+      $('ext-baixar').hidden = lista.length > 0
+      lista.forEach(function (d) {
+        var li = document.createElement('li'); li.style.cssText = 'display:flex;justify-content:space-between;gap:8px;align-items:center;margin:6px 0'
+        var t = document.createElement('span'); t.textContent = d.nome + ' · ' + (d.pausada ? 'pausado' : d.conectado ? 'conectado' : 'desconectado')
+        var b = document.createElement('button'); b.className = 'sec'; b.type = 'button'; b.textContent = 'Desconectar'
+        b.addEventListener('click', function () { b.disabled = true; api('DELETE', '/api/extensao/dispositivos/' + encodeURIComponent(d.id)).then(mostrarExtensao) })
+        li.appendChild(t); li.appendChild(b); ul.appendChild(li)
+      })
     })
   }
 
   function iniciar() {
+    if (/[?&]extensao=1/.test(location.search)) $('aviso-ext').hidden = false
     api('GET', '/api/eu').then(function (r) {
       if (r.status !== 200) return tela('login')
       $('quem').textContent = r.json.nome || r.json.email
