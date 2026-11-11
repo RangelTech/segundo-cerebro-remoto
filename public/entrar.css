@@ -31,3 +31,12 @@ h2{font-size:.8rem;letter-spacing:.06em;text-transform:uppercase;color:var(--sua
 .contratar span{color:var(--suave);font-size:.88rem}
 button.link{background:transparent;border:0;color:var(--texto);opacity:.75;text-decoration:underline;font-size:.9rem;padding:8px 0;cursor:pointer}
 .aviso{color:var(--texto);opacity:.85;margin:0;font-size:.9rem}
+
+/* bloco "Deixe a IA usar o seu Chrome": título, texto e link em linhas separadas, link legível no tema escuro */
+#ext{display:grid;gap:6px}
+#ext b{display:block}
+#ext span{display:block;line-height:1.5}
+#ext ul{list-style:none;margin:4px 0 0;padding:0}
+#ext a#ext-baixar{display:inline-block;justify-self:start;margin-top:4px;padding:9px 14px;border-radius:10px;background:var(--cor);color:#1a120b;font-weight:600;text-decoration:none}
+#ext a#ext-baixar:hover,#ext a#ext-baixar:focus-visible{filter:brightness(1.08);outline:none}
+#ext a#ext-baixar[hidden]{display:none}
